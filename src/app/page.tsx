@@ -10,6 +10,7 @@ import { StreakBar } from "@/components/StreakBar";
 import { Tickets } from "@/components/Tickets";
 import { useLiveMarkets } from "@/hooks/useMarkets";
 import { createExchange, addressesForChain } from "@/lib/somnia";
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import type { LiveMarketCard } from "@/hooks/useMarkets";
 
 export default function Home() {
@@ -28,7 +29,7 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [lastResult, setLastResult] = useState<string | null>(null);
   const [faucetMsg, setFaucetMsg] = useState<string | null>(null);
-  const [approving, setApproving] = useState(false);
+  const [, setApproving] = useState(false);
 
   // Balances poll (collateral + native)
   useEffect(() => {
@@ -132,7 +133,6 @@ export default function Home() {
           // Fallback: also check allowance via SDK helper against pool if we can resolve pool
           if (collateral && spenders.length) {
             const decimals = chainId === 50312 ? 6 : 18;
-            const needed = parseUnits(String(snapped), decimals); // snapped contracts * price approx; over-estimate with snapped*1
             const neededWithPrice = parseUnits(String((snapped * 0.99).toFixed(decimals === 6 ? 4 : 6)), decimals);
             for (const sp of spenders) {
               try {
