@@ -133,17 +133,30 @@ export default function Home() {
               const allowance = (await publicClient.readContract({ address: collateral, abi: erc20Abi, functionName: "allowance", args: [address, spender] } as never)) as bigint;
               if (allowance < neededWithPrice) {
                 setApproving(true);
-                setLastResult(`Approving ${chainId === 50312 ? "tUSDC" : "USDso"} for trading…`);
-                const hash = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({
-                  address: collateral,
-                  abi: erc20Abi,
-                  functionName: "approve",
-                  args: [spender, 2n ** 256n - 1n],
-                });
+                setLastResult(`Approving ${chainId === 50312 ? "tUSDC" : "USDso"} — one-time, then no more popups for this token…`);
+                let hash: `0x${string}`;
+                try {
+                  hash = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({
+                    address: collateral,
+                    abi: erc20Abi,
+                    functionName: "approve",
+                    args: [spender, 2n ** 256n - 1n],
+                  });
+                } catch (e) {
+                  setLastResult(`Approve rejected or failed: ${(e as Error).message.slice(0, 200)}`);
+                  return;
+                }
+                setLastResult(`Waiting for approve confirmation…`);
                 await publicClient.waitForTransactionReceipt({ hash });
                 setLastResult(`Approved — placing order…`);
               }
-            } catch {}
+            } catch (e) {
+              // allowance read failed — try to proceed anyway (SDK may handle)
+              if ((e as Error).message?.includes("rejected")) {
+                setLastResult(`Approve check failed: ${(e as Error).message.slice(0, 200)}`);
+                return;
+              }
+            }
           }
         } catch {}
         finally {
@@ -153,9 +166,27 @@ export default function Home() {
 
       // Exchange needs its market registry populated before createOrder (otherwise "unknown symbol")
       // useLiveMarkets loads on a separate instance, so hydrate this trader instance now.
+      // Retry once if symbol still unknown — handles market rolling between hook poll and trade.
       try {
         await ex.loadMarkets(true);
-      } catch {}
+      } catch (e) {
+        setLastResult(`Failed to load markets: ${(e as Error).message.slice(0, 200)}`);
+        return;
+      }
+      // Verify symbol is known after load; if not, force refresh and retry
+      const knownBefore = (ex as unknown as { markets?: Record<string, unknown> }).markets;
+      if (knownBefore && !(symbol in knownBefore)) {
+        try {
+          await ex.loadMarkets(true);
+        } catch {}
+        const knownAfter = (ex as unknown as { markets?: Record<string, unknown> }).markets;
+        if (knownAfter && !(symbol in knownAfter)) {
+          // market may have just rolled — refresh board and ask user to retry
+          refresh();
+          setLastResult(`Market ${symbol} just rolled — refreshed board, pick the new window and try again.`);
+          return;
+        }
+      }
 
       // Price: probe book for best ask/bid, fallback to mid
       // Both YES and NO books are quoted in UP probability (1 - NO = UP)
