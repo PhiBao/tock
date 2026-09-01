@@ -2,7 +2,7 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WagmiProvider, createConfig, http } from "wagmi";
-import { injected } from "wagmi/connectors";
+import { injected, coinbaseWallet } from "wagmi/connectors";
 import { somniaMainnet, somniaShannon } from "@/config/chains";
 import { useState } from "react";
 
@@ -12,7 +12,7 @@ const wagmiConfig = createConfig({
     [somniaMainnet.id]: http("https://api.infra.mainnet.somnia.network"),
     [somniaShannon.id]: http("https://api.infra.testnet.somnia.network"),
   },
-  connectors: [injected()],
+  connectors: [injected(), coinbaseWallet({ appName: "Tock" })],
   ssr: true,
 });
 

@@ -1,20 +1,23 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useAccount, useWalletClient, useSwitchChain } from "wagmi";
+import { useAccount, useWalletClient, useSwitchChain, usePublicClient } from "wagmi";
+import { erc20Abi, parseUnits, formatUnits } from "viem";
 import { WalletConnect } from "@/components/WalletConnect";
 import { MarketCard } from "@/components/MarketCard";
 import { TradePanel } from "@/components/TradePanel";
 import { StreakBar } from "@/components/StreakBar";
 import { Tickets } from "@/components/Tickets";
 import { useLiveMarkets } from "@/hooks/useMarkets";
-import { createExchange } from "@/lib/somnia";
+import { createExchange, addressesForChain } from "@/lib/somnia";
 import type { LiveMarketCard } from "@/hooks/useMarkets";
 
 export default function Home() {
   const { address, chainId: walletChainId, isConnected } = useAccount();
   const { data: walletClient } = useWalletClient();
+  const publicClient = usePublicClient();
   const { switchChain } = useSwitchChain();
+  const [balances, setBalances] = useState<{ collateral: string; native: string; decimals: number } | null>(null);
 
   // Default to Shannon testnet for safe demo, but respect wallet chain if connected
   const chainId = walletChainId ?? 50312;
@@ -25,6 +28,40 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [lastResult, setLastResult] = useState<string | null>(null);
   const [faucetMsg, setFaucetMsg] = useState<string | null>(null);
+  const [approving, setApproving] = useState(false);
+
+  // Balances poll (collateral + native)
+  useEffect(() => {
+    if (!address || !publicClient) {
+      setBalances(null);
+      return;
+    }
+    let dead = false;
+    const fetchBal = async () => {
+      try {
+        const addrs = addressesForChain(chainId);
+        const collateral = (addrs as unknown as { collateral?: `0x${string}`; testUsdc?: `0x${string}` }).collateral ?? (addrs as unknown as { testUsdc?: `0x${string}` }).testUsdc;
+        const isTestnet = chainId === 50312;
+        const decimals = isTestnet ? 6 : 18;
+        let collStr = "—";
+        if (collateral) {
+          try {
+            const raw = (await publicClient.readContract({ address: collateral, abi: erc20Abi, functionName: "balanceOf", args: [address] } as never)) as bigint;
+            collStr = formatUnits(raw, decimals);
+          } catch {}
+        }
+        const nativeRaw = await publicClient.getBalance({ address });
+        const nativeStr = formatUnits(nativeRaw, 18);
+        if (!dead) setBalances({ collateral: collStr, native: nativeStr, decimals });
+      } catch {}
+    };
+    fetchBal();
+    const id = setInterval(fetchBal, 6000);
+    return () => {
+      dead = true;
+      clearInterval(id);
+    };
+  }, [address, publicClient, chainId]);
 
   // Auto-select first BTC 15m
   useEffect(() => {
@@ -79,7 +116,51 @@ export default function Home() {
         return;
       }
 
+      // Ensure collateral allowance — binary pool pulls from wallet via BinaryMarketsModule/CollateralRouter
+      // Check allowance to spender; if insufficient, approve max.
+      if (publicClient) {
+        try {
+          const addrs = addressesForChain(chainId);
+          const collateral = (addrs as unknown as { collateral?: `0x${string}`; testUsdc?: `0x${string}` }).collateral ?? (addrs as unknown as { testUsdc?: `0x${string}` }).testUsdc;
+          // Spender: BinaryMarketsModule is the puller for complete sets; pool also may be spender.
+          // We approve both module and collateralRouter if present to be safe.
+          const spenders: `0x${string}`[] = [];
+          const bm = (addrs as unknown as { binaryModule?: `0x${string}` }).binaryModule;
+          const router = (addrs as unknown as { collateralRouter?: `0x${string}` }).collateralRouter;
+          if (bm) spenders.push(bm);
+          if (router) spenders.push(router);
+          // Fallback: also check allowance via SDK helper against pool if we can resolve pool
+          if (collateral && spenders.length) {
+            const decimals = chainId === 50312 ? 6 : 18;
+            const needed = parseUnits(String(snapped), decimals); // snapped contracts * price approx; over-estimate with snapped*1
+            const neededWithPrice = parseUnits(String((snapped * 0.99).toFixed(decimals === 6 ? 4 : 6)), decimals);
+            for (const sp of spenders) {
+              try {
+                const allowance = (await publicClient.readContract({ address: collateral, abi: erc20Abi, functionName: "allowance", args: [address, sp] } as never)) as bigint;
+                if (allowance < neededWithPrice) {
+                  setApproving(true);
+                  setLastResult(`Approving ${chainId === 50312 ? "tUSDC" : "USDso"} for trading…`);
+                  const hash = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({
+                    address: collateral,
+                    abi: erc20Abi,
+                    functionName: "approve",
+                    args: [sp, 2n ** 256n - 1n],
+                  });
+                  await publicClient.waitForTransactionReceipt({ hash });
+                  setLastResult(`Approved — placing order…`);
+                }
+              } catch {}
+            }
+          }
+        } catch {}
+        finally {
+          setApproving(false);
+        }
+      }
+
       // Price: probe book for best ask/bid, fallback to mid
+      // Both YES and NO books are quoted in UP probability (1 - NO = UP)
+      // UP: buy YES at high UP (ask + 0.02) to cross. DOWN: buy NO at low UP (askNo - 0.02) to overpay Down.
       let price: number | undefined;
       try {
         const book = await (ex as unknown as { fetchOrderBook: (s: string, n: number) => Promise<{ bids: number[][]; asks: number[][] }> }).fetchOrderBook(symbol, 5);
@@ -90,13 +171,17 @@ export default function Home() {
           const ask = bestAsk ?? mid ?? 0.55;
           price = Math.min(0.99, ask + 0.02);
         } else {
-          // DOWN: buy NO at Up price = mid - 0.02 (Down 1 - mid, buy high Down => low Up)
-          const m = mid ?? 0.5;
-          price = Math.max(0.01, m - 0.02);
+          // DOWN: NO book ask is Up price of Down offer (e.g. 0.42 Up = 0.58 Down).
+          // To cross Down sellers we need low Up (high Down): askNoUp - 0.02
+          const askNoUp = bestAsk ?? mid ?? 0.5;
+          price = Math.max(0.01, askNoUp - 0.02);
+          // If no book, guarantee cross with extreme low Up (0.02 = 0.98 Down) — fill price still at market via IOC
+          if (bestAsk === undefined && mid === undefined) price = 0.02;
         }
       } catch {
         const m = selected.mid ?? 0.5;
-        price = side === "UP" ? Math.min(0.99, m + 0.02) : Math.max(0.01, m - 0.02);
+        price = side === "UP" ? Math.min(0.99, m + 0.02) : Math.max(0.01, m - 0.08);
+        if (side === "DOWN" && selected.mid === undefined) price = 0.05;
       }
 
       price = Math.max(0.001, Math.min(0.999, Number(price!.toFixed(3))));
@@ -114,6 +199,10 @@ export default function Home() {
       const info = (order as { info?: unknown })?.info as { receipt?: { transactionHash?: string; status?: string } } | undefined;
       const receipt = info?.receipt;
       const hash = receipt?.transactionHash ?? (order as { transactionHash?: string })?.transactionHash ?? "";
+      if (receipt?.status === "reverted") {
+        setLastResult(`Order reverted on-chain — ${hash ? `tx ${hash.slice(0, 10)}…` : "no hash"} — check balances/allowance or window locked.`);
+        return;
+      }
 
       // Count as streak entry optimistically — real win/loss determined after settlement, but we record participation
       setLastResult(
@@ -182,8 +271,28 @@ export default function Home() {
             <span className="hidden sm:inline ml-2 text-xs px-2.5 py-1 rounded-full bg-amber-400 text-black font-bold">LIVE on Somnia</span>
           </div>
           <div className="flex items-center gap-2">
+            {isConnected && balances && (
+              <div className="hidden md:flex items-center gap-2 text-xs font-mono bg-zinc-900 border border-zinc-800 px-3 py-1.5 rounded-full">
+                <span className="text-zinc-400">{isTestnet ? "tUSDC" : "USDso"}</span>
+                <span className="text-white font-bold">{Number(balances.collateral).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                <span className="text-zinc-600">·</span>
+                <span className="text-zinc-400">{isTestnet ? "STT" : "SOMI"}</span>
+                <span className="text-white font-bold">{Number(balances.native).toFixed(4)}</span>
+              </div>
+            )}
             <button
-              onClick={() => switchChain({ chainId: isTestnet ? 5031 : 50312 })}
+              onClick={async () => {
+                try {
+                  switchChain({ chainId: isTestnet ? 5031 : 50312 });
+                } catch {
+                  // fallback: try to add chain via wallet
+                  try {
+                    const target = isTestnet ? 5031 : 50312;
+                    const chain = target === 5031 ? { chainId: "0x13A7", chainName: "Somnia", nativeCurrency: { name: "Somnia", symbol: "SOMI", decimals: 18 }, rpcUrls: ["https://api.infra.mainnet.somnia.network"], blockExplorerUrls: ["https://explorer.somnia.network"] } : { chainId: "0xC4B0", chainName: "Somnia Shannon", nativeCurrency: { name: "STT", symbol: "STT", decimals: 18 }, rpcUrls: ["https://api.infra.testnet.somnia.network"], blockExplorerUrls: ["https://shannon-explorer.somnia.network"] };
+                    await (walletClient as unknown as { request: (p: unknown) => Promise<unknown> })?.request?.({ method: "wallet_addEthereumChain", params: [chain] });
+                  } catch {}
+                }
+              }}
               className="hidden sm:inline text-xs px-3 py-1.5 rounded-full bg-zinc-900 border border-zinc-800 hover:bg-zinc-800"
             >
               {isTestnet ? "Shannon testnet" : "Somnia mainnet"} · switch
@@ -295,8 +404,81 @@ export default function Home() {
             <a href="https://dreamdex.io/algo-arena" target="_blank" rel="noreferrer" className="flex-1 py-2.5 rounded-xl border border-white/20 text-white font-semibold text-center text-sm hover:bg-white/10">
               Algo Arena ↗
             </a>
-            <button onClick={() => window.print()} className="flex-1 py-2.5 rounded-xl border border-white/10 text-zinc-400 font-semibold text-center text-sm hover:bg-white/5">
-              Share card (Print)
+            <button
+              onClick={() => {
+                // Canvas share card: streak + last market
+                const c = document.createElement("canvas");
+                c.width = 1080;
+                c.height = 600;
+                const ctx = c.getContext("2d");
+                if (!ctx) return window.print();
+                ctx.fillStyle = "#09090b";
+                ctx.fillRect(0, 0, c.width, c.height);
+                // amber accent bar
+                ctx.fillStyle = "#facc15";
+                ctx.fillRect(0, 0, c.width, 8);
+                ctx.fillStyle = "#ffffff";
+                ctx.font = "900 72px system-ui, sans-serif";
+                ctx.fillText("Tock", 48, 100);
+                ctx.fillStyle = "#a1a1aa";
+                ctx.font = "600 24px system-ui, sans-serif";
+                ctx.fillText("CALL THE NEXT 15 MINUTES  •  DreamDEX on Somnia", 48, 135);
+                // streak box
+                const streakText = (() => {
+                  try {
+                    const raw = localStorage.getItem(`tock:streak:${chainId}:${(address ?? "anon").toLowerCase()}`);
+                    if (raw) {
+                      const s = JSON.parse(raw);
+                      return `🔥 Streak ${s.current}  •  Best ${s.best}  •  ${s.wins}W-${s.losses}L`;
+                    }
+                  } catch {}
+                  return "🔥 Streak 0 — start your run";
+                })();
+                ctx.fillStyle = "#18181b";
+                ctx.strokeStyle = "#27272a";
+                ctx.lineWidth = 2;
+                const boxY = 180;
+                // rounded rect helper
+                const rr = (x: number, y: number, w: number, h: number, r: number) => {
+                  ctx.beginPath();
+                  ctx.moveTo(x + r, y);
+                  ctx.arcTo(x + w, y, x + w, y + h, r);
+                  ctx.arcTo(x + w, y + h, x, y + h, r);
+                  ctx.arcTo(x, y + h, x, y, r);
+                  ctx.arcTo(x, y, x + w, y, r);
+                  ctx.closePath();
+                };
+                rr(48, boxY, 984, 140, 24);
+                ctx.fill();
+                ctx.stroke();
+                ctx.fillStyle = "#ffffff";
+                ctx.font = "700 36px system-ui, sans-serif";
+                ctx.fillText(streakText, 80, boxY + 60);
+                ctx.fillStyle = "#a1a1aa";
+                ctx.font = "400 22px system-ui, sans-serif";
+                ctx.fillText(selected ? `${selected.asset} · ${selected.intervalSec === 900 ? "15m" : selected.intervalSec === 3600 ? "1h" : `${Math.round(selected.intervalSec / 60)}m`}  •  Up ${selected.mid !== undefined ? Math.round(selected.mid * 100) + "%" : "—"}` : "No market selected", 80, boxY + 95);
+                // footer
+                ctx.fillStyle = "#52525b";
+                ctx.font = "500 20px system-ui, sans-serif";
+                ctx.fillText("Zero fees  •  Self-custody  •  Auditable oracle  •  tock.vercel.app", 48, 560);
+                const url = c.toDataURL("image/png");
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `tock-streak-${Date.now()}.png`;
+                a.click();
+                if (navigator.share) {
+                  // best-effort native share if available (mobile)
+                  c.toBlob((blob) => {
+                    if (blob) {
+                      const file = new File([blob], "tock.png", { type: "image/png" });
+                      navigator.share({ title: "Tock streak", text: streakText, files: [file] }).catch(() => {});
+                    }
+                  });
+                }
+              }}
+              className="flex-1 py-2.5 rounded-xl border border-white/10 text-zinc-400 font-semibold text-center text-sm hover:bg-white/5"
+            >
+              Share streak
             </button>
           </div>
 
