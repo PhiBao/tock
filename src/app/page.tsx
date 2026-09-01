@@ -117,46 +117,45 @@ export default function Home() {
         return;
       }
 
-      // Ensure collateral allowance — binary pool pulls from wallet via BinaryMarketsModule/CollateralRouter
-      // Check allowance to spender; if insufficient, approve max.
+      // Ensure collateral allowance — for binary markets the SDK pulls via CollateralRouter when present
+      // (fallback to BinaryMarketsModule). Approving both caused duplicate popups — pick one.
       if (publicClient) {
         try {
           const addrs = addressesForChain(chainId);
           const collateral = (addrs as unknown as { collateral?: `0x${string}`; testUsdc?: `0x${string}` }).collateral ?? (addrs as unknown as { testUsdc?: `0x${string}` }).testUsdc;
-          // Spender: BinaryMarketsModule is the puller for complete sets; pool also may be spender.
-          // We approve both module and collateralRouter if present to be safe.
-          const spenders: `0x${string}`[] = [];
-          const bm = (addrs as unknown as { binaryModule?: `0x${string}` }).binaryModule;
           const router = (addrs as unknown as { collateralRouter?: `0x${string}` }).collateralRouter;
-          if (bm) spenders.push(bm);
-          if (router) spenders.push(router);
-          // Fallback: also check allowance via SDK helper against pool if we can resolve pool
-          if (collateral && spenders.length) {
+          const bm = (addrs as unknown as { binaryModule?: `0x${string}` }).binaryModule;
+          const spender: `0x${string}` | undefined = router ?? bm;
+          if (collateral && spender) {
             const decimals = chainId === 50312 ? 6 : 18;
             const neededWithPrice = parseUnits(String((snapped * 0.99).toFixed(decimals === 6 ? 4 : 6)), decimals);
-            for (const sp of spenders) {
-              try {
-                const allowance = (await publicClient.readContract({ address: collateral, abi: erc20Abi, functionName: "allowance", args: [address, sp] } as never)) as bigint;
-                if (allowance < neededWithPrice) {
-                  setApproving(true);
-                  setLastResult(`Approving ${chainId === 50312 ? "tUSDC" : "USDso"} for trading…`);
-                  const hash = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({
-                    address: collateral,
-                    abi: erc20Abi,
-                    functionName: "approve",
-                    args: [sp, 2n ** 256n - 1n],
-                  });
-                  await publicClient.waitForTransactionReceipt({ hash });
-                  setLastResult(`Approved — placing order…`);
-                }
-              } catch {}
-            }
+            try {
+              const allowance = (await publicClient.readContract({ address: collateral, abi: erc20Abi, functionName: "allowance", args: [address, spender] } as never)) as bigint;
+              if (allowance < neededWithPrice) {
+                setApproving(true);
+                setLastResult(`Approving ${chainId === 50312 ? "tUSDC" : "USDso"} for trading…`);
+                const hash = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({
+                  address: collateral,
+                  abi: erc20Abi,
+                  functionName: "approve",
+                  args: [spender, 2n ** 256n - 1n],
+                });
+                await publicClient.waitForTransactionReceipt({ hash });
+                setLastResult(`Approved — placing order…`);
+              }
+            } catch {}
           }
         } catch {}
         finally {
           setApproving(false);
         }
       }
+
+      // Exchange needs its market registry populated before createOrder (otherwise "unknown symbol")
+      // useLiveMarkets loads on a separate instance, so hydrate this trader instance now.
+      try {
+        await ex.loadMarkets(true);
+      } catch {}
 
       // Price: probe book for best ask/bid, fallback to mid
       // Both YES and NO books are quoted in UP probability (1 - NO = UP)
