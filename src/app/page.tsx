@@ -19,10 +19,23 @@ export default function Home() {
   const publicClient = usePublicClient();
   const { switchChain } = useSwitchChain();
   const [balances, setBalances] = useState<{ collateral: string; native: string; decimals: number } | null>(null);
+  const [autoApprove, setAutoApprove] = useState(true);
 
   // Default to Shannon testnet for safe demo, but respect wallet chain if connected
   const chainId = walletChainId ?? 50312;
   const isTestnet = chainId === 50312;
+
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem(`tock:autoApprove:${chainId}`);
+      if (v !== null) setAutoApprove(v === "true");
+    } catch {}
+  }, [chainId]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(`tock:autoApprove:${chainId}`, String(autoApprove));
+    } catch {}
+  }, [autoApprove, chainId]);
 
   const { cards, loading, error, refresh } = useLiveMarkets(chainId, true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -117,51 +130,70 @@ export default function Home() {
         return;
       }
 
-      // Ensure collateral allowance — for binary markets the SDK pulls via CollateralRouter when present
-      // (fallback to BinaryMarketsModule). Approving both caused duplicate popups — pick one.
-      if (publicClient) {
+      // Allowance: let the SDK's internal approveIfNeeded handle pool-specific ERC20 approvals.
+      // We only do a one-time manual max-approve to the universal spender when autoApprove is on,
+      // otherwise we skip and let the SDK prompt per-trade (exact). This avoids duplicate popups.
+      // SDK caches per token→spender, but pools are per-window — so first trade per new window may still need 1 approve.
+      // Somnia also has delegate primitives: ERC6909 setOperator (outcome tokens) and
+      // OperatorPermissionsRegistry.setOperatorApprovalGlobal (for placeOrderFor delegation) — we surface those as “delegate” below.
+      if (publicClient && autoApprove) {
         try {
           const addrs = addressesForChain(chainId);
           const collateral = (addrs as unknown as { collateral?: `0x${string}`; testUsdc?: `0x${string}` }).collateral ?? (addrs as unknown as { testUsdc?: `0x${string}` }).testUsdc;
+          // Prefer pool-specific spender for binary: the market's own pool (requires per-window approve)
+          // Fallback to universal CollateralRouter if pool not yet known — keeps it to one popup per new pool.
+          const poolFromMarket = (selected.market as unknown as { poolAddress?: `0x${string}` }).poolAddress;
           const router = (addrs as unknown as { collateralRouter?: `0x${string}` }).collateralRouter;
-          const bm = (addrs as unknown as { binaryModule?: `0x${string}` }).binaryModule;
-          const spender: `0x${string}` | undefined = router ?? bm;
+          const spender: `0x${string}` | undefined = poolFromMarket ?? router ?? (addrs as unknown as { binaryModule?: `0x${string}` }).binaryModule;
           if (collateral && spender) {
             const decimals = chainId === 50312 ? 6 : 18;
             const neededWithPrice = parseUnits(String((snapped * 0.99).toFixed(decimals === 6 ? 4 : 6)), decimals);
-            try {
-              const allowance = (await publicClient.readContract({ address: collateral, abi: erc20Abi, functionName: "allowance", args: [address, spender] } as never)) as bigint;
-              if (allowance < neededWithPrice) {
-                setApproving(true);
-                setLastResult(`Approving ${chainId === 50312 ? "tUSDC" : "USDso"} — one-time, then no more popups for this token…`);
-                let hash: `0x${string}`;
-                try {
-                  hash = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({
-                    address: collateral,
-                    abi: erc20Abi,
-                    functionName: "approve",
-                    args: [spender, 2n ** 256n - 1n],
-                  });
-                } catch (e) {
-                  setLastResult(`Approve rejected or failed: ${(e as Error).message.slice(0, 200)}`);
-                  return;
+            const key = `tock:approved:${chainId}:${spender.toLowerCase()}`;
+            const already = (() => {
+              try {
+                return localStorage.getItem(key) === "true";
+              } catch {
+                return false;
+              }
+            })();
+            if (!already) {
+              try {
+                const allowance = (await publicClient.readContract({ address: collateral, abi: erc20Abi, functionName: "allowance", args: [address, spender] } as never)) as bigint;
+                if (allowance < neededWithPrice) {
+                  setApproving(true);
+                  setLastResult(`Approving ${chainId === 50312 ? "tUSDC" : "USDso"} for this pool — one-time per new window…`);
+                  let hash: `0x${string}`;
+                  try {
+                    hash = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({
+                      address: collateral,
+                      abi: erc20Abi,
+                      functionName: "approve",
+                      args: [spender, 2n ** 256n - 1n],
+                    });
+                  } catch (e) {
+                    setLastResult(`Approve rejected: ${(e as Error).message.slice(0, 200)}`);
+                    return;
+                  }
+                  await publicClient.waitForTransactionReceipt({ hash });
+                  try {
+                    localStorage.setItem(key, "true");
+                  } catch {}
+                  setLastResult(`Approved pool ${spender.slice(0, 6)}… — placing order…`);
+                } else {
+                  try {
+                    localStorage.setItem(key, "true");
+                  } catch {}
                 }
-                setLastResult(`Waiting for approve confirmation…`);
-                await publicClient.waitForTransactionReceipt({ hash });
-                setLastResult(`Approved — placing order…`);
-              }
-            } catch (e) {
-              // allowance read failed — try to proceed anyway (SDK may handle)
-              if ((e as Error).message?.includes("rejected")) {
-                setLastResult(`Approve check failed: ${(e as Error).message.slice(0, 200)}`);
-                return;
-              }
+              } catch {}
             }
           }
         } catch {}
         finally {
           setApproving(false);
         }
+      } else if (!autoApprove) {
+        // When auto-approve off, do not pre-approve — let SDK prompt per-trade (or use Permit2 if available)
+        setLastResult(`Auto-approve off — SDK will prompt for allowance if needed.`);
       }
 
       // Exchange needs its market registry populated before createOrder (otherwise "unknown symbol")
@@ -174,13 +206,15 @@ export default function Home() {
         return;
       }
       // Verify symbol is known after load; if not, force refresh and retry
+      // ex.markets keys are base symbols without #YES/#NO, so check base
+      const base = symbol.split("#")[0];
       const knownBefore = (ex as unknown as { markets?: Record<string, unknown> }).markets;
-      if (knownBefore && !(symbol in knownBefore)) {
+      if (knownBefore && !(base in knownBefore) && !(symbol in knownBefore)) {
         try {
           await ex.loadMarkets(true);
         } catch {}
         const knownAfter = (ex as unknown as { markets?: Record<string, unknown> }).markets;
-        if (knownAfter && !(symbol in knownAfter)) {
+        if (knownAfter && !(base in knownAfter) && !(symbol in knownAfter)) {
           // market may have just rolled — refresh board and ask user to retry
           refresh();
           setLastResult(`Market ${symbol} just rolled — refreshed board, pick the new window and try again.`);
@@ -407,7 +441,7 @@ export default function Home() {
 
         {/* Right: trade + tickets */}
         <div className="lg:col-span-7 flex flex-col gap-4">
-          <TradePanel card={selected} onTrade={trade} busy={busy} lastResult={lastResult} />
+          <TradePanel card={selected} onTrade={trade} busy={busy} lastResult={lastResult} autoApprove={autoApprove} setAutoApprove={setAutoApprove} />
 
           {/* Price context — Binance sparkline placeholder */}
           {selected && (

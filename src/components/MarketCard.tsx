@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { motion } from "framer-motion";
 import { fmtCountdown, fmtProb, intervalLabel } from "@/lib/format";
 import type { LiveMarketCard } from "@/hooks/useMarkets";
 
@@ -28,15 +29,27 @@ export function MarketCard({
   const isLocked = secsLeft <= 30;
 
   return (
-    <button
+    <motion.button
       onClick={onSelect}
-      className={`relative text-left w-full rounded-2xl border p-4 flex flex-col gap-3 transition overflow-hidden ${
-        isActive ? "bg-white text-black border-white" : "bg-zinc-900 text-white border-zinc-800 hover:border-zinc-700"
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      whileHover={{ scale: 1.015, y: -1 }}
+      whileTap={{ scale: 0.98 }}
+      transition={{ type: "spring", stiffness: 400, damping: 25 }}
+      className={`relative text-left w-full rounded-2xl border p-4 flex flex-col gap-3 overflow-hidden backdrop-blur ${
+        isActive
+          ? "bg-white text-black border-white shadow-xl shadow-white/10"
+          : "bg-zinc-900/80 text-white border-zinc-800 hover:border-zinc-700 hover:bg-zinc-900"
       }`}
     >
       {/* progress bar */}
-      <div className="absolute inset-x-0 top-0 h-1 bg-black/10">
-        <div className="h-full bg-amber-400 transition-all" style={{ width: `${Math.min(100, Math.max(0, pct * 100))}%` }} />
+      <div className="absolute inset-x-0 top-0 h-1 bg-black/10 overflow-hidden">
+        <motion.div
+          className="h-full bg-gradient-to-r from-amber-400 to-orange-400"
+          initial={{ width: 0 }}
+          animate={{ width: `${Math.min(100, Math.max(0, pct * 100))}%` }}
+          transition={{ type: "spring", stiffness: 120, damping: 20 }}
+        />
       </div>
 
       <div className="flex items-start justify-between gap-3 pt-1">
@@ -60,26 +73,37 @@ export function MarketCard({
       {/* needle */}
       <div className="flex items-center gap-2">
         <div className={`flex-1 h-2 rounded-full ${isActive ? "bg-black/10" : "bg-white/10"} relative overflow-hidden`}>
-          <div
-            className="absolute top-0 bottom-0 w-0.5 bg-white shadow"
-            style={{ left: `calc(${Math.min(98, Math.max(2, (prob ?? 0.5) * 100))}% - 1px)`, background: isActive ? "#000" : "#fff" }}
+          <motion.div
+            className="absolute top-0 bottom-0 w-0.5 shadow"
+            animate={{ left: `calc(${Math.min(98, Math.max(2, (prob ?? 0.5) * 100))}% - 1px)` }}
+            transition={{ type: "spring", stiffness: 300, damping: 30 }}
+            style={{ background: isActive ? "#000" : "#fff" }}
           />
           <div className="absolute inset-0 flex">
-            <div className="flex-1 bg-emerald-500/70" />
-            <div className="flex-1 bg-red-500/70" />
+            <div className="flex-1 bg-gradient-to-r from-emerald-500 to-emerald-400" />
+            <div className="flex-1 bg-gradient-to-r from-red-400 to-red-500" />
           </div>
         </div>
-        <span className={`text-xs font-mono ${isActive ? "text-zinc-600" : "text-zinc-400"}`}>
+        <motion.span
+          key={`${card.bestBid}-${card.bestAsk}`}
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className={`text-xs font-mono ${isActive ? "text-zinc-600" : "text-zinc-400"}`}
+        >
           {card.bestBid !== undefined && card.bestAsk !== undefined ? `${fmtProb(card.bestBid)} / ${fmtProb(card.bestAsk)}` : "no book yet"}
-        </span>
+        </motion.span>
       </div>
 
       <div className="flex items-center justify-between">
-        <span className={`text-xs font-medium px-2 py-1 rounded-full ${isLocked ? "bg-red-500 text-white" : isUrgent ? "bg-amber-400 text-black" : isActive ? "bg-black text-white" : "bg-white/10 text-white/80"}`}>
+        <motion.span
+          animate={{ scale: isUrgent ? [1, 1.05, 1] : 1 }}
+          transition={{ repeat: isUrgent ? Infinity : 0, duration: 0.8 }}
+          className={`text-xs font-medium px-2 py-1 rounded-full ${isLocked ? "bg-red-500 text-white" : isUrgent ? "bg-amber-400 text-black" : isActive ? "bg-black text-white" : "bg-white/10 text-white/80"}`}
+        >
           {isLocked ? "Locked" : isUrgent ? "Final seconds" : "Trading"}
-        </span>
+        </motion.span>
         <span className={`text-[10px] font-mono ${isActive ? "text-zinc-500" : "text-zinc-500"}`}>{card.marketId.slice(0, 10)}…</span>
       </div>
-    </button>
+    </motion.button>
   );
 }
