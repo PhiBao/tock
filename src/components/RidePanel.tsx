@@ -62,7 +62,7 @@ export function RidePanel({
                 <button
                   key={a}
                   onClick={() => setAsset(a)}
-                  className={`py-2.5 rounded-xl font-bold border ${asset === a ? "bg-white text-black border-white" : "bg-zinc-800 text-zinc-300 border-zinc-700"}`}
+                  className={`py-2.5 rounded-xl font-bold border ${asset === a ? "bg-gold text-black border-gold" : "bg-zinc-800 text-zinc-300 border-zinc-700"}`}
                 >
                   {a}
                 </button>
@@ -105,7 +105,7 @@ export function RidePanel({
             </div>
             <button
               onClick={() => onStartRide({ asset, direction: dir, stake, maxLegs, target, stopLoss: stake * 0.5 })}
-              className="w-full py-3.5 rounded-2xl bg-white text-black font-black hover:bg-zinc-100 flex items-center justify-center gap-2"
+              className="w-full py-3.5 rounded-2xl bg-gold text-black font-black hover:bg-amber-300 flex items-center justify-center gap-2"
             >
               Start Ride — {asset} {dir} {maxLegs} legs
             </button>

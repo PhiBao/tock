@@ -1,12 +1,17 @@
 "use client";
+import Link from "next/link";
 import { useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { SiteHeader } from "@/components/SiteHeader";
+import { useBalances } from "@/hooks/useBalances";
+import { useAccount, usePublicClient } from "wagmi";
 
 export default function McpPage() {
   const [result, setResult] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  const { address, chainId, isConnected } = useAccount();
+  const publicClient = usePublicClient();
+  const balances = useBalances(chainId ?? 50312, address, publicClient);
 
   const callTool = async (name: string, args: Record<string, unknown> = {}) => {
     setLoading(true);
@@ -41,64 +46,130 @@ export default function McpPage() {
   }
 }`;
 
+  const steps = [
+    {
+      n: "1",
+      title: "Add Tock to your AI app",
+      body: "Works with Claude Desktop, Cursor, and any MCP-capable assistant. Paste this into your config file and restart the app.",
+    },
+    {
+      n: "2",
+      title: "Delegate once on Tock",
+      body: "Trading needs your money, not ours — one approval lets the agent place orders against your wallet. Revoke anytime.",
+    },
+    {
+      n: "3",
+      title: "Ask your assistant",
+      body: "It reads live windows, crosses the spread IOC, and rolls rides — the same execution policy as the UI.",
+    },
+  ];
+
   return (
-    <div className="min-h-screen bg-black text-white p-6 max-w-3xl mx-auto space-y-6">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-white text-black grid place-items-center font-black">◐</div>
-        <div>
-          <h1 className="text-2xl font-black">Connect your AI to Tock</h1>
-          <p className="text-sm text-zinc-400">Let Claude or Cursor place your next bet. One setup, then just ask.</p>
+    <div className="flex min-h-screen flex-col bg-ink text-white">
+      <SiteHeader chainId={chainId ?? 50312} balances={balances} isConnected={isConnected} />
+      <main className="mx-auto w-full max-w-3xl space-y-4 px-4 py-8">
+        <div className="flex items-center gap-3">
+          <div className="grid h-11 w-11 place-items-center rounded-2xl bg-gold text-xl font-black text-black">◐</div>
+          <div>
+            <p className="text-[11px] font-bold tracking-[0.24em] text-gold">AGENT SURFACE · MCP</p>
+            <h1 className="font-display text-2xl font-black tracking-tight sm:text-3xl">Point your AI at Tock</h1>
+            <p className="mt-1 text-sm text-zinc-400">Let Claude or Cursor read windows and place your next call. One setup, then just ask.</p>
+          </div>
+          <span className="ml-auto hidden items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-bold text-emerald-300 sm:inline-flex">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+            Live
+          </span>
         </div>
-        <Badge className="ml-auto bg-emerald-500">Live</Badge>
-      </div>
 
-      <Card className="bg-zinc-900 border-zinc-800">
-        <CardHeader><CardTitle className="text-base">1 — Copy and add to your AI app</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
-          <p className="text-sm text-zinc-400">Works with Claude Desktop, Cursor, and any assistant that supports MCP. Paste this into your config file and restart the app.</p>
-          <div className="relative rounded-xl bg-black border border-zinc-800 p-3">
-            <pre className="font-mono text-xs overflow-auto pr-16">{config}</pre>
-            <button onClick={() => copy(config, "main")} className="absolute top-2 right-2 text-xs px-3 py-1.5 rounded-lg bg-white text-black font-bold hover:bg-zinc-100">{copied === "main" ? "Copied!" : "Copy"}</button>
-          </div>
-          <p className="text-xs text-zinc-500">File location: <code className="bg-white/10 px-1.5 py-0.5 rounded">claude_desktop_config.json</code> (Claude) or <code className="bg-white/10 px-1.5 py-0.5 rounded">.cursor/mcp.json</code> (Cursor)</p>
-        </CardContent>
-      </Card>
+        <div className="grid gap-3">
+          {steps.map((s) => (
+            <div key={s.n} className="rounded-3xl border border-white/[0.07] bg-panel p-5">
+              <div className="flex items-center gap-3">
+                <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-gold font-mono text-xs font-black text-black">
+                  {s.n}
+                </span>
+                <h2 className="font-display text-base font-bold">{s.title}</h2>
+              </div>
+              <p className="mt-2 text-sm leading-relaxed text-zinc-400">{s.body}</p>
+              {s.n === "1" && (
+                <>
+                  <div className="relative mt-3 rounded-2xl border border-white/10 bg-black/50 p-3">
+                    <pre className="overflow-auto pr-16 font-mono text-xs leading-relaxed text-zinc-200">{config}</pre>
+                    <button
+                      onClick={() => copy(config, "main")}
+                      className="absolute right-2 top-2 rounded-lg bg-gold px-3 py-1.5 text-xs font-bold text-black transition hover:bg-amber-300"
+                    >
+                      {copied === "main" ? "Copied!" : "Copy"}
+                    </button>
+                  </div>
+                  <p className="mt-2 text-xs text-zinc-600">
+                    File: <code className="rounded bg-white/10 px-1.5 py-0.5">claude_desktop_config.json</code> (Claude) or{" "}
+                    <code className="rounded bg-white/10 px-1.5 py-0.5">.cursor/mcp.json</code> (Cursor)
+                  </p>
+                </>
+              )}
+              {s.n === "2" && (
+                <p className="mt-2 text-sm text-zinc-300">
+                  Go to <Link href="/" className="font-semibold text-gold underline underline-offset-2">Tock</Link> → connect on
+                  Shannon testnet → <b>Give agent permission</b>. Funds stay in your wallet; take it back in one click.
+                </p>
+              )}
+              {s.n === "3" && (
+                <>
+                  <div className="mt-3 space-y-1 rounded-2xl border border-white/10 bg-black/50 p-3 font-mono text-xs">
+                    <div className="text-zinc-600">Try saying:</div>
+                    <div className="text-zinc-100">“Place a BTC UP bet for $5 on Tock”</div>
+                    <div className="text-zinc-100">“Start a BTC UP ride for $5, 4 legs”</div>
+                    <div className="text-zinc-100">“What&apos;s my streak on Tock?”</div>
+                  </div>
+                  <p className="mt-3 text-xs text-zinc-500">Or try it right here:</p>
+                  <div className="mt-2 grid grid-cols-3 gap-2">
+                    <button
+                      onClick={() => callTool("get_live_markets")}
+                      disabled={loading}
+                      className="rounded-xl bg-white py-2.5 text-xs font-bold text-black transition hover:bg-zinc-200 disabled:opacity-50"
+                    >
+                      Live markets
+                    </button>
+                    <button
+                      onClick={() => callTool("place_bet", { asset: "BTC", direction: "UP", stake: 5 })}
+                      disabled={loading}
+                      className="rounded-xl border border-white/15 py-2.5 text-xs font-semibold text-white transition hover:bg-white/5 disabled:opacity-50"
+                    >
+                      $5 demo bet
+                    </button>
+                    <button
+                      onClick={() => callTool("start_ride", { asset: "BTC", direction: "UP", stake: 5, maxLegs: 4 })}
+                      disabled={loading}
+                      className="rounded-xl border border-gold/30 py-2.5 text-xs font-bold text-gold transition hover:bg-gold/10 disabled:opacity-50"
+                    >
+                      Start ride
+                    </button>
+                  </div>
+                  {loading && <p className="mt-2 font-mono text-xs text-zinc-500">Calling tool…</p>}
+                  {result && (
+                    <pre className="mt-2 max-h-[260px] overflow-auto rounded-2xl border border-white/10 bg-black/50 p-3 font-mono text-xs text-zinc-300">
+                      {result}
+                    </pre>
+                  )}
+                </>
+              )}
+            </div>
+          ))}
+        </div>
 
-      <Card className="bg-zinc-900 border-zinc-800">
-        <CardHeader><CardTitle className="text-base">2 — Delegate once on Tock</CardTitle></CardHeader>
-        <CardContent className="space-y-2">
-          <p className="text-sm text-zinc-300">Go to <a href="/" className="underline text-white">Tock</a> → connect your wallet on Shannon testnet → click <b>Delegate to Agent</b>. One approval and your agent can trade for you.</p>
-          <div className="rounded-lg bg-zinc-950 border border-zinc-800 p-2.5 text-xs text-zinc-400">
-            Your funds stay in your wallet. You can take back permission anytime with one click.
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card className="bg-zinc-900 border-zinc-800">
-        <CardHeader><CardTitle className="text-base">3 — Ask your assistant</CardTitle></CardHeader>
-        <CardContent className="space-y-2 text-sm">
-          <div className="rounded-xl bg-black border border-zinc-800 p-3 font-mono text-xs space-y-1">
-            <div className="text-zinc-500">Try saying:</div>
-            <div className="text-white">“Place a BTC UP bet for $5 on Tock”</div>
-            <div className="text-white">“Start a BTC UP ride for $5, 4 legs”</div>
-            <div className="text-white">“What’s my streak on Tock?”</div>
-          </div>
-          <p className="text-xs text-zinc-500">Or try it right here:</p>
-          <div className="grid grid-cols-3 gap-2">
-            <button onClick={() => callTool("get_live_markets")} disabled={loading} className="py-2.5 rounded-xl bg-white text-black font-bold text-xs disabled:opacity-50">See live markets</button>
-            <button onClick={() => callTool("place_bet", { asset: "BTC", direction: "UP", stake: 5 })} disabled={loading} className="py-2.5 rounded-xl border border-white/20 text-white text-xs hover:bg-white/10 disabled:opacity-50">Place $5 demo</button>
-            <button onClick={() => callTool("start_ride", { asset: "BTC", direction: "UP", stake: 5, maxLegs: 4 })} disabled={loading} className="py-2.5 rounded-xl border border-amber-500/30 text-amber-300 text-xs hover:bg-amber-950/30 disabled:opacity-50">Start ride</button>
-          </div>
-          {result && <pre className="rounded-xl bg-black border border-zinc-800 p-3 text-xs overflow-auto max-h-[260px]">{result}</pre>}
-        </CardContent>
-      </Card>
-
-      <Card className="bg-zinc-900/50 border-zinc-800">
-        <CardContent className="pt-4 flex items-center justify-between text-xs">
-          <span className="text-zinc-500">Need the direct address? <code className="bg-white/10 px-1.5 py-0.5 rounded font-mono break-all">{endpoint}</code></span>
-          <button onClick={() => copy(endpoint, "ep")} className="text-xs px-2 py-1 rounded bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 shrink-0 ml-2">{copied === "ep" ? "Copied!" : "Copy"}</button>
-        </CardContent>
-      </Card>
+        <div className="flex items-center justify-between gap-2 rounded-2xl border border-white/[0.07] bg-panel px-4 py-3 text-xs">
+          <span className="min-w-0 truncate text-zinc-500">
+            Endpoint <code className="rounded bg-white/10 px-1.5 py-0.5 font-mono">{endpoint}</code>
+          </span>
+          <button
+            onClick={() => copy(endpoint, "ep")}
+            className="ml-2 shrink-0 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 font-semibold text-zinc-200 transition hover:bg-white/10"
+          >
+            {copied === "ep" ? "Copied!" : "Copy"}
+          </button>
+        </div>
+      </main>
     </div>
   );
 }

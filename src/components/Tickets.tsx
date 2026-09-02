@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useWalletClient } from "wagmi";
+import { motion } from "framer-motion";
 import { createExchange } from "@/lib/somnia";
 import { intervalLabel } from "@/lib/format";
+import { planClaims } from "@/lib/orderMath";
 import { useStreak } from "@/hooks/useStreak";
 
 type TicketRow = {
@@ -11,7 +13,6 @@ type TicketRow = {
   asset: string;
   expiry: number;
   intervalSec: number;
-  upSymbol: string;
   myUp: string;
   myDown: string;
   status: string;
@@ -32,40 +33,37 @@ export function Tickets({ chainId, address }: { chainId: number; address?: strin
     setLoading(true);
     const ex = createExchange({ chainId });
     try {
-      // Scan finalized for history + live positions via balances
       const settled = await ex.client.listBinaryMarkets({ status: "Finalized", limit: 40 } as never);
-      const sorted = [...settled].sort((a: unknown, b: unknown) => Number((b as { expiry?: string }).expiry ?? 0) - Number((a as { expiry?: string }).expiry ?? 0));
+      const sorted = [...settled].sort(
+        (a: unknown, b: unknown) => Number((b as { expiry?: string }).expiry ?? 0) - Number((a as { expiry?: string }).expiry ?? 0)
+      );
       const next: TicketRow[] = [];
       for (const m of sorted.slice(0, 20) as unknown as Array<{
         marketId: string;
         asset: string;
         expiry: string;
         intervalSec: string;
-        outcomes?: Array<{ symbol: string }>;
-        market?: string;
-        outcomeToken?: string;
-        yesId?: string;
-        noId?: string;
       }>) {
         try {
-          const oc = await ex.client.getMarketOnchain(m.marketId as `0x${string}`);
-          // get balances to see if we ever held
-          // Use any to tolerate ABI drift
-          const upBal =
-            oc.outcomeToken && oc.yesId
-              ? await (ex.client as unknown as { getOutcomeBalance: (t: string, a: string, id: string) => Promise<bigint> }).getOutcomeBalance(oc.outcomeToken, address, String(oc.yesId))
-              : BigInt(0);
-          const downBal =
-            oc.outcomeToken && oc.noId
-              ? await (ex.client as unknown as { getOutcomeBalance: (t: string, a: string, id: string) => Promise<bigint> }).getOutcomeBalance(oc.outcomeToken, address, String(oc.noId))
-              : BigInt(0);
-          // Also check recent fills to know we participated even if balances now 0 (redeemed)
-          // For MVP we show any market where we had a fill; balances alone misses redeemed wins.
-          // Fetch user fills scoped to this market's window via getUserFills — but that needs pool. Instead, just show if balances >0 OR we can infer via PnL call.
+          const oc = (await ex.client.getMarketOnchain(m.marketId as `0x${string}`)) as unknown as {
+            outcomeToken?: string;
+            yesId?: string | bigint;
+            noId?: string | bigint;
+            isVoided?: boolean;
+            isResolved?: boolean;
+            winningOutcome?: number;
+            status?: number | string;
+          };
+          const getBal = ex.client as unknown as {
+            getOutcomeBalance: (t: string, a: string, id: string) => Promise<bigint>;
+          };
+          const upBal = oc.outcomeToken && oc.yesId != null ? await getBal.getOutcomeBalance(oc.outcomeToken, address, String(oc.yesId)) : BigInt(0);
+          const downBal = oc.outcomeToken && oc.noId != null ? await getBal.getOutcomeBalance(oc.outcomeToken, address, String(oc.noId)) : BigInt(0);
           let hasPosition = upBal > BigInt(0) || downBal > BigInt(0);
-          // Try PnL as participation signal
           try {
-            const pnl = await (ex.client as unknown as { getBinaryPositionPnL: (a: string, id: string) => Promise<unknown> }).getBinaryPositionPnL(address, m.marketId as `0x${string}`);
+            const pnl = await (
+              ex.client as unknown as { getBinaryPositionPnL: (a: string, id: string) => Promise<unknown> }
+            ).getBinaryPositionPnL(address, m.marketId as `0x${string}`);
             if (pnl && typeof pnl === "object" && "realizedPnl" in (pnl as Record<string, unknown>)) hasPosition = true;
           } catch {}
           if (!hasPosition) continue;
@@ -74,11 +72,10 @@ export function Tickets({ chainId, address }: { chainId: number; address?: strin
             asset: m.asset,
             expiry: Number(m.expiry),
             intervalSec: Number(m.intervalSec),
-            upSymbol: m.outcomes?.[0]?.symbol ?? "",
             myUp: upBal.toString(),
             myDown: downBal.toString(),
             status: oc.isVoided ? "Voided" : oc.isResolved ? "Resolved" : String(oc.status),
-            winning: (oc as unknown as { winningOutcome?: number }).winningOutcome ?? null,
+            winning: oc.winningOutcome ?? null,
             isVoided: !!oc.isVoided,
           });
         } catch {
@@ -103,7 +100,7 @@ export function Tickets({ chainId, address }: { chainId: number; address?: strin
   const claimAll = useCallback(async () => {
     if (!address) return;
     if (!walletClient) {
-      setMsg("Connect wallet to claim — needs signer.");
+      setMsg("Connect a wallet to claim — needs a signer.");
       return;
     }
     setClaiming(true);
@@ -113,36 +110,42 @@ export function Tickets({ chainId, address }: { chainId: number; address?: strin
     let checked = 0;
     try {
       const settled = await ex.client.listBinaryMarkets({ status: "Finalized", limit: 40 } as never);
-      const sorted = [...settled].sort((a: unknown, b: unknown) => Number((b as { expiry?: string }).expiry ?? 0) - Number((a as { expiry?: string }).expiry ?? 0));
+      const sorted = [...settled].sort(
+        (a: unknown, b: unknown) => Number((b as { expiry?: string }).expiry ?? 0) - Number((a as { expiry?: string }).expiry ?? 0)
+      );
       for (const m of sorted.slice(0, 20) as unknown as Array<{ marketId: string }>) {
         checked++;
         try {
           const oc: unknown = await ex.client.getMarketOnchain(m.marketId as `0x${string}`);
-          const o = oc as { outcomeToken?: `0x${string}`; yesId?: string; noId?: string; isVoided?: boolean; isResolved?: boolean; winningOutcome?: number; marketAddress?: `0x${string}` };
+          const o = oc as {
+            outcomeToken?: `0x${string}`;
+            yesId?: string;
+            noId?: string;
+            isVoided?: boolean;
+            isResolved?: boolean;
+            winningOutcome?: number;
+            marketAddress?: `0x${string}`;
+          };
           if (!o.outcomeToken || (!o.yesId && !o.noId)) continue;
-          const getBal = ex.client as unknown as { getOutcomeBalance: (t: string, a: string, id: string) => Promise<bigint> };
-          const toClaim: Array<{ idx: 0 | 1; amount: bigint }> = [];
-          if (o.isVoided) {
-            if (o.yesId) {
-              const b = await getBal.getOutcomeBalance(o.outcomeToken, address, String(o.yesId));
-              if (b > BigInt(0)) toClaim.push({ idx: 0, amount: b });
-            }
-            if (o.noId) {
-              const b = await getBal.getOutcomeBalance(o.outcomeToken, address, String(o.noId));
-              if (b > BigInt(0)) toClaim.push({ idx: 1, amount: b });
-            }
-          } else if (o.isResolved && o.winningOutcome !== undefined && o.winningOutcome !== null) {
-            const winId = o.winningOutcome === 0 ? o.yesId : o.noId;
-            const winIdx = o.winningOutcome === 0 ? 0 : 1;
-            if (winId) {
-              const b = await getBal.getOutcomeBalance(o.outcomeToken, address, String(winId));
-              if (b > BigInt(0)) toClaim.push({ idx: winIdx as 0 | 1, amount: b });
-            }
-          } else continue;
-
+          const getBal = ex.client as unknown as {
+            getOutcomeBalance: (t: string, a: string, id: string) => Promise<bigint>;
+          };
+          const yesBal = o.yesId ? await getBal.getOutcomeBalance(o.outcomeToken, address, String(o.yesId)) : BigInt(0);
+          const noBal = o.noId ? await getBal.getOutcomeBalance(o.outcomeToken, address, String(o.noId)) : BigInt(0);
+          const toClaim = planClaims({
+            isVoided: o.isVoided,
+            isResolved: o.isResolved,
+            winningOutcome: o.winningOutcome,
+            yesBal,
+            noBal,
+          });
           for (const c of toClaim) {
             try {
-              const res = await (ex.trader as unknown as { redeem: (p: unknown) => Promise<{ receipt?: { transactionHash?: string; status?: string } }> }).redeem({
+              const res = await (
+                ex.trader as unknown as {
+                  redeem: (p: unknown) => Promise<{ receipt?: { transactionHash?: string; status?: string } }>;
+                }
+              ).redeem({
                 marketId: m.marketId as `0x${string}`,
                 market: o.marketAddress,
                 outcomeToken: o.outcomeToken,
@@ -151,7 +154,6 @@ export function Tickets({ chainId, address }: { chainId: number; address?: strin
               });
               if (res.receipt?.status !== "reverted") {
                 claimed++;
-                // record streak: void = null, win = true
                 const isVoid = !!o.isVoided;
                 record(isVoid ? null : true, "claim", "auto", c.idx === 0 ? "UP" : "DOWN");
               }
@@ -160,73 +162,113 @@ export function Tickets({ chainId, address }: { chainId: number; address?: strin
         } catch {}
         if (claimed >= 5) break; // cap gas per click
       }
-      if (claimed === 0) setMsg(`Checked ${checked} finalized windows — no claimable winnings found. Balances are zero or already redeemed.`);
+      if (claimed === 0) setMsg(`Checked ${checked} finalized windows — nothing claimable. Balances are zero or already redeemed.`);
       else {
-        setMsg(`Claimed ${claimed} position(s) — tx sent. Refresh to see updated balances.`);
-        // refresh after claim
+        setMsg(`Claimed ${claimed} position${claimed > 1 ? "s" : ""} — sent to your wallet.`);
         setTimeout(() => refresh(), 1200);
       }
     } catch (e) {
       setMsg(`Claim failed: ${(e as Error).message.slice(0, 300)}`);
     } finally {
       setClaiming(false);
-      try { ex.close?.(); } catch {}
+      try {
+        ex.close?.();
+      } catch {}
     }
   }, [address, chainId, walletClient, record, refresh]);
 
-  // Also offer manual streak recording for demo (since on-chain win detection needs fills)
-  // This is a demo helper: not auto, but lets user mark result for streak.
-  // Real win detection would derive from getMarketResolution open vs close.
   return (
-    <div className="rounded-3xl bg-zinc-900 border border-zinc-800 p-5 flex flex-col gap-4">
+    <div className="flex flex-col gap-4 rounded-3xl border border-white/[0.07] bg-panel p-5">
       <div className="flex items-center justify-between">
-        <h3 className="font-semibold text-white">Tickets & history</h3>
-        <button onClick={refresh} disabled={loading} className="text-xs px-3 py-1.5 rounded-full bg-white text-black font-medium disabled:opacity-60">
-          {loading ? "Loading…" : "Refresh"}
+        <h3 className="font-display text-base font-bold">Tickets & history</h3>
+        <button
+          onClick={refresh}
+          disabled={loading}
+          className="rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold text-zinc-300 transition hover:bg-white/5 disabled:opacity-60"
+        >
+          {loading ? "Scanning…" : "Refresh"}
         </button>
       </div>
 
-      {!address && <p className="text-sm text-zinc-400">Connect a wallet to see your tickets. On testnet, use Faucet to get tUSDC.</p>}
+      {!address && (
+        <p className="text-sm leading-relaxed text-zinc-500">
+          Connect a wallet to see your tickets. On testnet, grab tUSDC from the faucet first.
+        </p>
+      )}
 
-      {address && rows.length === 0 && !loading && <p className="text-sm text-zinc-400">No tickets found yet. Place a call and check back after settlement — it scans the last 40 finalized windows.</p>}
+      {address && rows.length === 0 && !loading && (
+        <p className="text-sm leading-relaxed text-zinc-500">
+          No tickets yet. Place a call — after settlement it lands here with its result.
+        </p>
+      )}
 
       <div className="grid gap-2">
-        {rows.map((r) => (
-          <div key={r.marketId} className="rounded-2xl bg-zinc-800 border border-zinc-700 p-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold text-white">
-                {r.asset} · {intervalLabel(r.intervalSec)} · {new Date(r.expiry * 1000).toLocaleTimeString()}
+        {rows.map((r) => {
+          const iWon = !r.isVoided && r.winning !== null && r.winning !== undefined;
+          return (
+            <motion.div
+              key={r.marketId}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex items-center justify-between gap-3 rounded-2xl border border-white/[0.06] bg-black/30 p-3"
+            >
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-sm font-bold text-white">
+                  <span
+                    className={`h-2 w-2 shrink-0 rounded-full ${
+                      r.isVoided ? "bg-zinc-500" : iWon ? (r.winning === 0 ? "bg-emerald-400" : "bg-red-400") : "bg-gold"
+                    }`}
+                  />
+                  {r.asset} · {intervalLabel(r.intervalSec)} ·{" "}
+                  {new Date(r.expiry * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </div>
+                <div className="mt-1 font-mono text-[11px] tabular-nums text-zinc-500">
+                  Up {r.myUp} · Down {r.myDown} · {r.status}
+                  {r.isVoided
+                    ? " · void, 0.5 back"
+                    : r.winning !== null && r.winning !== undefined
+                      ? ` · won ${r.winning === 0 ? "UP" : "DOWN"}`
+                      : ""}
+                </div>
               </div>
-              <div className="text-xs font-mono text-zinc-400">
-                Up {r.myUp} · Down {r.myDown} · {r.status}
-                {r.isVoided ? " · void 0.5" : r.winning !== null && r.winning !== undefined ? ` · winner ${r.winning === 0 ? "UP" : "DOWN"}` : ""}
+              <div className="flex shrink-0 gap-1.5">
+                <button
+                  onClick={() => record(true, r.asset, intervalLabel(r.intervalSec), "UP")}
+                  title="Demo helper: mark a win for your streak"
+                  className="rounded-full bg-emerald-500/15 px-2.5 py-1 text-[11px] font-bold text-emerald-300 transition hover:bg-emerald-500/25"
+                >
+                  W
+                </button>
+                <button
+                  onClick={() => record(false, r.asset, intervalLabel(r.intervalSec), "DOWN")}
+                  title="Demo helper: mark a loss for your streak"
+                  className="rounded-full bg-red-500/15 px-2.5 py-1 text-[11px] font-bold text-red-300 transition hover:bg-red-500/25"
+                >
+                  L
+                </button>
               </div>
-              <div className="text-[10px] font-mono text-zinc-500">{r.marketId.slice(0, 18)}…</div>
-            </div>
-            <div className="flex gap-1">
-              <button
-                onClick={() => record(true, r.asset, intervalLabel(r.intervalSec), "UP")}
-                className="text-[10px] px-2 py-1 rounded-full bg-emerald-500 text-white"
-                title="Demo: mark win for streak"
-              >
-                Mark W
-              </button>
-              <button onClick={() => record(false, r.asset, intervalLabel(r.intervalSec), "DOWN")} className="text-[10px] px-2 py-1 rounded-full bg-red-500 text-white">
-                Mark L
-              </button>
-            </div>
-          </div>
-        ))}
+            </motion.div>
+          );
+        })}
       </div>
 
-      <button onClick={claimAll} disabled={claiming || !address} className="w-full py-3 rounded-2xl bg-amber-400 text-black font-bold disabled:opacity-60">
-        {claiming ? "Checking…" : "Claim winnings (auto-scan)"}
+      <button
+        onClick={claimAll}
+        disabled={claiming || !address}
+        className="w-full rounded-2xl bg-gold py-3.5 text-sm font-black text-black transition hover:bg-amber-300 active:scale-[0.99] disabled:opacity-60"
+      >
+        {claiming ? "Scanning settled windows…" : "Claim winnings"}
       </button>
 
-      {msg && <div className="text-xs font-mono bg-amber-50 border border-amber-200 text-amber-900 p-3 rounded-xl break-words">{msg}</div>}
+      {msg && (
+        <div className="break-words rounded-xl border border-white/10 bg-black/40 p-3 font-mono text-[11px] leading-relaxed text-zinc-300">
+          {msg}
+        </div>
+      )}
 
-      <p className="text-[11px] text-zinc-500 leading-relaxed">
-        Tap <b>Claim</b> to collect your winnings. We check your recent games and send anything you won straight to your wallet.
+      <p className="text-[11px] leading-relaxed text-zinc-600">
+        Claim scans your last 40 settled windows and redeems winners (voids pay 0.5 on both sides). Losing sides are
+        skipped — redeeming them pays 0 and still costs gas.
       </p>
     </div>
   );

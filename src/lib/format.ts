@@ -20,6 +20,14 @@ export function fmtCountdown(expirySec: number, nowSec: number): string {
   return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
+/** "8m 12s" style label for prose contexts. */
+export function secsLeftLabel(secs: number): string {
+  const s = Math.max(0, Math.floor(secs));
+  const m = Math.floor(s / 60);
+  if (m <= 0) return `${s}s`;
+  return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+}
+
 export function intervalLabel(sec: number): string {
   if (sec === 900) return "15m";
   if (sec === 3600) return "1h";
