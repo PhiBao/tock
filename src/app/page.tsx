@@ -716,16 +716,8 @@ export default function Home() {
         {/* Right: trade + ride + tickets */}
         <div className="lg:col-span-7 flex flex-col gap-4">
           <div className="flex p-1 bg-zinc-900 rounded-2xl border border-zinc-800 gap-1">
-            <button onClick={() => setMode("manual")} className={`flex-1 py-2 rounded-xl text-sm font-bold ${mode === "manual" ? "bg-white text-black" : "text-zinc-400 hover:text-white"}`}>Manual</button>
-            <button onClick={() => setMode("ride")} className={`flex-1 py-2 rounded-xl text-sm font-bold ${mode === "ride" ? "bg-amber-400 text-black" : "text-zinc-400 hover:text-white"}`}>Ride auto-roll</button>
-            <button
-              onClick={handleDelegate}
-              disabled={busy}
-              className="flex-1 py-2 rounded-xl text-xs font-bold border border-white/10 text-zinc-300 hover:bg-white/10 disabled:opacity-50"
-              title="One-time: approve Tock agent via OperatorPermissionsRegistry — then agent can placeOrderFor with zero popups"
-            >
-              Delegate to Agent
-            </button>
+            <button onClick={() => setMode("manual")} className={`flex-1 py-2 rounded-xl text-sm font-bold ${mode === "manual" ? "bg-white text-black" : "text-zinc-400 hover:text-white"}`}>Manual — 1 tap</button>
+            <button onClick={() => setMode("ride")} className={`flex-1 py-2 rounded-xl text-sm font-bold ${mode === "ride" ? "bg-amber-400 text-black" : "text-zinc-400 hover:text-white"}`}>Ride — auto-roll</button>
           </div>
           {mode === "ride" ? (
             <RidePanel chainId={chainId} ride={ride} onStartRide={handleStartRide} onStop={handleStopRide} />

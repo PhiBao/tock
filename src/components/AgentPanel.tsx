@@ -62,17 +62,13 @@ export function AgentPanel({ isDelegated, onToggle, lastHumanTrade }: { isDelega
           <button onClick={onToggle} className="flex-1 py-2 rounded-xl bg-zinc-800 border border-zinc-700 text-xs font-semibold hover:bg-zinc-700">
             {isDelegated ? "Revoke delegate" : "Delegate to Agent (one-time)"}
           </button>
-          <button
-            onClick={() => {
-              const cfg = { mcpServers: { tock: { command: "npx", args: ["tsx", "mcp/server.ts"], env: { SOMNIA_RPC: "https://dream-rpc.somnia.network" } } } };
-              navigator.clipboard.writeText(JSON.stringify(cfg, null, 2));
-              // also try to copy via fallback
-            }}
-            className="px-3 py-2 rounded-xl border border-white/10 text-xs hover:bg-white/5"
-            title="Copy MCP config for Claude Desktop — then ask Claude to 'place a BTC UP bet via Tock'"
+          <a
+            href="/mcp"
+            className="px-3 py-2 rounded-xl border border-white/10 text-xs hover:bg-white/5 text-center"
+            title="Open MCP guide — stdio for Claude Desktop + HTTP for web"
           >
-            Copy MCP
-          </button>
+            MCP Guide ↗
+          </a>
         </div>
         <div className="text-[11px] text-zinc-500 leading-relaxed">
           After delegate, the agent runs <code className="bg-white/10 px-1 rounded">npx tsx mcp/server.ts</code> and can call <code>place_bet</code> alongside you — no extra wallet popups. See <code>mcp/server.ts</code> tools.
