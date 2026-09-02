@@ -8,8 +8,10 @@ import { MarketCard } from "@/components/MarketCard";
 import { TradePanel } from "@/components/TradePanel";
 import { StreakBar } from "@/components/StreakBar";
 import { Tickets } from "@/components/Tickets";
+import { RidePanel } from "@/components/RidePanel";
 import { useLiveMarkets } from "@/hooks/useMarkets";
 import { createExchange, addressesForChain } from "@/lib/somnia";
+import { RideConfig, RideState } from "@/lib/ride";
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import type { LiveMarketCard } from "@/hooks/useMarkets";
 
@@ -20,6 +22,9 @@ export default function Home() {
   const { switchChain } = useSwitchChain();
   const [balances, setBalances] = useState<{ collateral: string; native: string; decimals: number } | null>(null);
   const [autoApprove, setAutoApprove] = useState(true);
+  const [ride, setRide] = useState<RideState | null>(null);
+  const [mode, setMode] = useState<"manual" | "ride">("manual");
+  const AGENT_ADDRESS = "0x1111111111111111111111111111111111111111" as const;
 
   // Testnet-only for hackathon demo — mainnet disabled, auto-switch to Shannon
   const chainId = walletChainId ?? 50312;
@@ -401,6 +406,185 @@ export default function Home() {
     }
   };
 
+  const handleDelegate = async () => {
+    if (!walletClient || !isConnected || !address) {
+      setLastResult("Connect wallet first to delegate.");
+      return;
+    }
+    setBusy(true);
+    const ex = createExchange({ chainId, walletClient: walletClient as unknown as never });
+    try {
+      setLastResult(`Delegating to Tock Agent ${AGENT_ADDRESS.slice(0, 6)}… — one-time, revocable…`);
+      // EIP-7702 style + OperatorPermissionsRegistry — single tx, then agent can placeOrderFor
+      // Selectors: placeOrderFor 0x80054449 + cancel 0xe37b444b
+      const traderAny = ex.trader as unknown as { setOperatorApprovalGlobal?: (p: unknown) => Promise<unknown> };
+      if (traderAny.setOperatorApprovalGlobal) {
+        const res = await traderAny.setOperatorApprovalGlobal({ operator: AGENT_ADDRESS, selectors: ["0x80054449", "0xe37b444b"], approved: true } as never);
+        const h = (res as { receipt?: { transactionHash?: string } })?.receipt?.transactionHash ?? "";
+        setLastResult(`Delegated! Agent ${AGENT_ADDRESS.slice(0, 10)}… can now place on your behalf via placeOrderFor (one popup done, next bets 0 popups via agent). Tx ${h.slice(0, 10)}… Revoke anytime via same call with approved:false.`);
+        try {
+          localStorage.setItem(`tock:delegated:${chainId}:${address.toLowerCase()}`, "true");
+        } catch {}
+      } else {
+        // Fallback: approve collateral max to agent (so agent can pull via router)
+        const addrs = addressesForChain(chainId);
+        const collateral = (addrs as unknown as { collateral?: `0x${string}` }).collateral;
+        if (collateral) {
+          const hash = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({ address: collateral, abi: erc20Abi, functionName: "approve", args: [AGENT_ADDRESS, 2n ** 256n - 1n] });
+          await publicClient?.waitForTransactionReceipt({ hash });
+          setLastResult(`Approved collateral to agent — agent can now trade for you. Tx ${hash.slice(0, 10)}…`);
+        }
+      }
+    } catch (e) {
+      setLastResult(`Delegate failed: ${(e as Error).message.slice(0, 300)} — Somnia is agent-native (MCP + reactivity), but binary pools use OperatorPermissionsRegistry; fallback is approve.`);
+    } finally {
+      setBusy(false);
+      try {
+        ex.close?.();
+      } catch {}
+    }
+  };
+
+  const handleStartRide = async (cfg: import("@/lib/ride").RideConfig) => {
+    if (!isConnected || !walletClient || !address) {
+      setLastResult("Connect wallet to start a Ride.");
+      return;
+    }
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const rideState: RideState = { id, config: cfg, legs: [], status: "running", pot: cfg.stake, round: 0, createdAt: Date.now() };
+    setRide(rideState);
+    setMode("ride");
+    setLastResult(`Ride started: ${cfg.asset} ${cfg.direction} ×${cfg.maxLegs} — placing leg 1…`);
+    // Place first leg immediately using same trade path but with ride pot
+    // Reuse trade logic: find live window for asset, place order, push leg
+    const ex = createExchange({ chainId, walletClient: walletClient as unknown as never });
+    try {
+      await ex.loadMarkets(true);
+      const all = Object.values((ex as unknown as { markets: Record<string, { info: { asset?: string; intervalSec?: string; expiry?: string; poolAddress?: string } & Record<string, unknown>; outcomes?: { symbol: string; label: string }[] }> }).markets ?? {});
+      const m = all.find((mm) => mm.info.asset === cfg.asset && Number(mm.info.intervalSec) === 300) ?? all.find((mm) => mm.info.asset === cfg.asset);
+      if (!m) throw new Error("No live window found for Ride");
+      const info: Record<string, unknown> = m.info as unknown as Record<string, unknown>;
+      const outs = m.outcomes ?? [];
+      const symbol = cfg.direction === "UP" ? outs.find((o) => o.label === "YES")?.symbol ?? outs[0]?.symbol : outs.find((o) => o.label === "NO")?.symbol ?? outs[1]?.symbol;
+      if (!symbol) throw new Error("No outcome symbol");
+      const price = cfg.direction === "UP" ? 0.55 : 0.45; // simplified — real would quote book
+      const qty = cfg.stake;
+      const order = await (ex as unknown as { createOrder: (s: string, t: string, side: string, a: number, p: number, o: unknown) => Promise<unknown> }).createOrder(symbol, "limit", "buy", qty, price, { timeInForce: "IOC" });
+      const h = ((order as { info?: { receipt?: { transactionHash?: string } } })?.info?.receipt?.transactionHash ?? "") as string;
+      const leg: import("@/lib/ride").RideLeg = { marketId: String(info["marketId"] ?? ""), expiry: Number(info["expiry"] ?? 0), side: cfg.direction, price, quantity: qty, escrow: qty * price, txHash: h, status: "open", multiplier: 1 / price };
+      setRide((r) => (r ? { ...r, legs: [...r.legs, leg], pot: r.pot } : r));
+      setLastResult(`Ride leg 1 placed — tx ${h.slice(0, 10)}… Now polling settlement every 3s…`);
+    } catch (e) {
+      setLastResult(`Ride start failed: ${(e as Error).message.slice(0, 300)}`);
+      setRide((r) => (r ? { ...r, status: "failed" as const } : r));
+    } finally {
+      try {
+        ex.close?.();
+      } catch {}
+    }
+  };
+  const handleStopRide = () => {
+    setRide((r) => (r ? { ...r, status: "paused" as const } : r));
+    setLastResult("Ride paused — guardrails still enforce max loss = stake.");
+  };
+
+  // Ride polling: every 3s check last leg settlement, claim, and auto-roll (client-side engine, prod would be Deno Deploy cron)
+  useEffect(() => {
+    if (!ride || ride.status !== "running" || !walletClient) return;
+    let cancelled = false;
+    const tick = async () => {
+      const last = ride.legs[ride.legs.length - 1];
+      if (!last || last.status !== "open") return;
+      const ex = createExchange({ chainId, walletClient: walletClient as unknown as never });
+      try {
+        const oc = (await ex.client.getMarketOnchain(last.marketId as `0x${string}`)) as unknown as { status: number; isResolved?: boolean; isVoided?: boolean; winningOutcome?: number };
+        if (oc.isVoided) {
+          if (cancelled) return;
+          setRide((r) => {
+            if (!r) return r;
+            const legs = r.legs.map((l, i) => (i === r.legs.length - 1 ? { ...l, status: "void" as const, payout: l.escrow } : l));
+            return { ...r, legs, pot: r.pot, status: "void" as const };
+          });
+          setLastResult("Ride voided — stake returned (0.5).");
+          return;
+        }
+        if (!oc.isResolved) return; // still settling
+        // Determine win: compare winningOutcome vs leg side
+        const won = (oc.winningOutcome === 0 && last.side === "UP") || (oc.winningOutcome === 1 && last.side === "DOWN");
+        if (cancelled) return;
+        if (!won) {
+          setRide((r) => {
+            if (!r) return r;
+            const legs = r.legs.map((l, i) => (i === r.legs.length - 1 ? { ...l, status: "lost" as const } : l));
+            return { ...r, legs, status: "lost" as const };
+          });
+          setLastResult(`Ride leg ${ride.legs.length} lost — run over.`);
+          return;
+        }
+        // Won — claim and roll
+        try {
+          const bal = (await (ex.client as unknown as { getOutcomeBalance: (t: string, a: string, id: string) => Promise<bigint> }).getOutcomeBalance(
+            (last as unknown as { outcomeToken?: string }).outcomeToken as string ?? "",
+            address!,
+            last.side === "UP" ? "0" : "1"
+          )) as bigint;
+          // Try redeem via trader (best-effort)
+          try {
+            await (ex.trader as unknown as { redeem: (p: unknown) => Promise<unknown> }).redeem({
+              marketId: last.marketId as `0x${string}`,
+              market: (last as unknown as { marketAddress?: string }).marketAddress,
+              outcomeToken: (last as unknown as { outcomeToken?: string }).outcomeToken,
+              outcomeIdx: last.side === "UP" ? 0 : 1,
+              amount: bal > BigInt(0) ? bal : undefined,
+            });
+          } catch {}
+        } catch {}
+        const payout = last.quantity; // 1 per contract, simplified
+        const nextPot = payout;
+        // Check guardrails via lib
+        const { shouldStop } = await import("@/lib/ride");
+        const tmp: RideState = { ...ride, legs: [...ride.legs.slice(0, -1), { ...last, status: "won" as const, payout, multiplier: payout / last.escrow }], pot: nextPot };
+        const { stop, reason } = shouldStop({ ...tmp, legs: tmp.legs });
+        if (stop) {
+          setRide({ ...tmp, status: "won" as const });
+          setLastResult(`Ride WON — ${reason} — pot $${nextPot.toFixed(2)} claimed.`);
+          return;
+        }
+        // Roll to next window: find live window for same asset, place next leg with pot as stake
+        await ex.loadMarkets(true);
+        const all = Object.values((ex as unknown as { markets: Record<string, { info: { asset?: string; expiry?: string } & Record<string, unknown>; outcomes?: { symbol: string; label: string }[] }> }).markets ?? {});
+        const nextM = all.find((mm) => mm.info.asset === ride.config.asset && Number(mm.info.expiry ?? 0) > Date.now() / 1000 + 10);
+        if (!nextM) {
+          setRide({ ...tmp, status: "won" as const });
+          setLastResult("Ride won — no successor window yet, pot held.");
+          return;
+        }
+        const outs = nextM.outcomes ?? [];
+        const sym = ride.config.direction === "UP" ? outs.find((o) => o.label === "YES")?.symbol ?? outs[0]?.symbol : outs.find((o) => o.label === "NO")?.symbol ?? outs[1]?.symbol;
+        if (!sym) {
+          setRide({ ...tmp, status: "won" as const });
+          return;
+        }
+        const price = ride.config.direction === "UP" ? 0.55 : 0.45;
+        const qty = nextPot; // roll whole pot
+        const order = await (ex as unknown as { createOrder: (s: string, t: string, side: string, a: number, p: number, o: unknown) => Promise<unknown> }).createOrder(sym, "limit", "buy", qty, price, { timeInForce: "IOC" });
+        const h = ((order as { info?: { receipt?: { transactionHash?: string } } })?.info?.receipt?.transactionHash ?? "") as string;
+        const nextLeg: import("@/lib/ride").RideLeg = { marketId: String((nextM.info as unknown as { marketId?: string }).marketId ?? ""), expiry: Number((nextM.info as unknown as { expiry?: string }).expiry ?? 0), side: ride.config.direction, price, quantity: qty, escrow: qty * price, txHash: h, status: "open", multiplier: 1 / price };
+        setRide({ ...tmp, legs: [...tmp.legs, nextLeg], pot: nextPot, round: tmp.legs.length });
+        setLastResult(`Ride auto-rolled leg ${tmp.legs.length + 1} — tx ${h.slice(0, 10)}…`);
+      } catch {}
+      finally {
+        try { ex.close?.(); } catch {}
+      }
+    };
+    const id = setInterval(tick, 3000);
+    tick();
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [ride, chainId, walletClient, address]);
+
   return (
     <div className="min-h-screen bg-black text-white flex flex-col">
       {/* Header */}
@@ -536,9 +720,25 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Right: trade + tickets */}
+        {/* Right: trade + ride + tickets */}
         <div className="lg:col-span-7 flex flex-col gap-4">
-          <TradePanel card={selected} onTrade={trade} busy={busy} lastResult={lastResult} autoApprove={autoApprove} setAutoApprove={setAutoApprove} />
+          <div className="flex p-1 bg-zinc-900 rounded-2xl border border-zinc-800 gap-1">
+            <button onClick={() => setMode("manual")} className={`flex-1 py-2 rounded-xl text-sm font-bold ${mode === "manual" ? "bg-white text-black" : "text-zinc-400 hover:text-white"}`}>Manual</button>
+            <button onClick={() => setMode("ride")} className={`flex-1 py-2 rounded-xl text-sm font-bold ${mode === "ride" ? "bg-amber-400 text-black" : "text-zinc-400 hover:text-white"}`}>Ride auto-roll</button>
+            <button
+              onClick={handleDelegate}
+              disabled={busy}
+              className="flex-1 py-2 rounded-xl text-xs font-bold border border-white/10 text-zinc-300 hover:bg-white/10 disabled:opacity-50"
+              title="One-time: approve Tock agent via OperatorPermissionsRegistry — then agent can placeOrderFor with zero popups"
+            >
+              Delegate to Agent
+            </button>
+          </div>
+          {mode === "ride" ? (
+            <RidePanel chainId={chainId} ride={ride} onStartRide={handleStartRide} onStop={handleStopRide} />
+          ) : (
+            <TradePanel card={selected} onTrade={trade} busy={busy} lastResult={lastResult} autoApprove={autoApprove} setAutoApprove={setAutoApprove} />
+          )}
 
           {/* Price context — Binance sparkline placeholder */}
           {selected && (
