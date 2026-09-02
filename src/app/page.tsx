@@ -11,6 +11,7 @@ import { StreakBar } from "@/components/StreakBar";
 import { Tickets } from "@/components/Tickets";
 import { RidePanel } from "@/components/RidePanel";
 import { AgentPanel } from "@/components/AgentPanel";
+import { ShareModal } from "@/components/ShareModal";
 import { FaucetPanel } from "@/components/FaucetPanel";
 import { LivePriceSpark } from "@/components/LivePriceSpark";
 import { useToast } from "@/components/Toaster";
@@ -20,7 +21,7 @@ import { useTrade } from "@/hooks/useTrade";
 import { createExchange, addressesForChain } from "@/lib/somnia";
 import { CHAIN_BY_ID } from "@/config/chains";
 import { COLLATERAL_SYMBOL } from "@/config/markets";
-import { downloadShareCard } from "@/lib/share";
+import { renderShareCard } from "@/lib/share";
 import { streakKey } from "@/lib/streak";
 import { shouldStop, type RideConfig, type RideState } from "@/lib/ride";
 
@@ -51,6 +52,7 @@ export default function Home() {
   } | null>(null);
   const [faucetMsg, setFaucetMsg] = useState<string | null>(null);
   const [faucetBusy, setFaucetBusy] = useState(false);
+  const [shareImg, setShareImg] = useState<string | null>(null);
 
   useEffect(() => {
     try {
@@ -468,14 +470,25 @@ export default function Home() {
     };
   }, [ride, chainId, walletClient, address, toast]);
 
-  const shareStreak = () =>
-    downloadShareCard({
+  const shareStreak = () => {
+    const canvas = renderShareCard({
       streakKey: streakKey(chainId, address),
       asset: selected?.asset,
       intervalSec: selected?.intervalSec,
       mid: selected?.mid,
       siteUrl: typeof window !== "undefined" ? window.location.host : "tock",
     });
+    if (!canvas) return;
+    setShareImg(canvas.toDataURL("image/png"));
+  };
+
+  const downloadShare = () => {
+    if (!shareImg) return;
+    const a = document.createElement("a");
+    a.href = shareImg;
+    a.download = `tock-streak-${Date.now()}.png`;
+    a.click();
+  };
 
   return (
     <div className="flex min-h-screen flex-col bg-ink text-white">
@@ -616,6 +629,13 @@ export default function Home() {
           </footer>
         </div>
       </main>
+
+      <ShareModal
+        open={shareImg !== null}
+        imgSrc={shareImg}
+        onDownload={downloadShare}
+        onClose={() => setShareImg(null)}
+      />
     </div>
   );
 }

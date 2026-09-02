@@ -33,12 +33,12 @@ function rr(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: n
   ctx.closePath();
 }
 
-export function downloadShareCard(input: ShareCardInput) {
+export function renderShareCard(input: ShareCardInput): HTMLCanvasElement | null {
   const c = document.createElement("canvas");
   c.width = 1080;
   c.height = 600;
   const ctx = c.getContext("2d");
-  if (!ctx) return;
+  if (!ctx) return null;
   ctx.fillStyle = "#09090b";
   ctx.fillRect(0, 0, c.width, c.height);
   ctx.fillStyle = "#fbbf24";
@@ -72,17 +72,21 @@ export function downloadShareCard(input: ShareCardInput) {
   ctx.font = "500 20px system-ui, sans-serif";
   ctx.fillText(`Zero fees  ·  Self-custody  ·  Auditable oracle  ·  ${input.siteUrl ?? "tock"}` , 48, 560);
 
-  const url = c.toDataURL("image/png");
+  return c;
+}
+
+/** Render + immediately download (no preview). Kept for programmatic use. */
+export function downloadShareCard(input: ShareCardInput) {
+  const c = renderShareCard(input);
+  if (!c) return;
+  downloadCanvas(c, `tock-streak-${Date.now()}.png`);
+}
+
+/** Save an already-rendered share card as a PNG file. */
+export function downloadCanvas(canvas: HTMLCanvasElement, filename: string) {
+  const url = canvas.toDataURL("image/png");
   const a = document.createElement("a");
   a.href = url;
-  a.download = `tock-streak-${Date.now()}.png`;
+  a.download = filename;
   a.click();
-  if (navigator.share) {
-    c.toBlob((blob) => {
-      if (blob) {
-        const file = new File([blob], "tock.png", { type: "image/png" });
-        navigator.share({ title: "Tock streak", text: streakText, files: [file] }).catch(() => {});
-      }
-    });
-  }
 }
