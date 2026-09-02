@@ -19,7 +19,7 @@ export const metadata: Metadata = {
   description: "The 15-minute arcade for BTC/ETH direction on DreamDEX. Zero fees, self-custody, streaks. Built on Somnia.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
       <html lang="en" className={`${geistSans.variable} ${geistMono.variable} dark h-full antialiased`}>
       <body className="min-h-full flex flex-col bg-black text-white">

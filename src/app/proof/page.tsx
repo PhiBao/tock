@@ -131,7 +131,7 @@ export default function ProofPage() {
         <section className="rounded-3xl border border-gold/25 bg-gradient-to-b from-gold/[0.07] to-transparent p-5">
           <h2 className="font-display text-base font-bold">Reproduce it in ~60 seconds</h2>
           <pre className="mt-3 overflow-auto rounded-2xl border border-white/10 bg-black/60 p-3.5 font-mono text-xs leading-relaxed text-zinc-200">
-{`git clone <this-repo> && cd tock
+{`git clone https://github.com/PhiBao/tock.git && cd tock
 pnpm install
 pnpm typecheck && pnpm lint && pnpm test   # 25 checks, zero keys
 pnpm demo                                   # live markets + books, no wallet`}
@@ -144,12 +144,20 @@ pnpm demo                                   # live markets + books, no wallet`}
               Open the app
             </Link>
             <a
+              href="https://github.com/PhiBao/tock"
+              target="_blank"
+              rel="noreferrer"
+              className="flex-1 rounded-xl border border-gold/30 py-2.5 text-center text-sm font-bold text-gold transition hover:bg-gold/10"
+            >
+              Repo ↗
+            </a>
+            <a
               href="https://docs.dreamdex.io/developers/event-contracts"
               target="_blank"
               rel="noreferrer"
               className="flex-1 rounded-xl border border-white/15 py-2.5 text-center text-sm font-semibold text-zinc-200 transition hover:bg-white/5"
             >
-              Event Contracts docs ↗
+              Docs ↗
             </a>
           </div>
         </section>
