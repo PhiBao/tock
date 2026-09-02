@@ -226,7 +226,7 @@ export function Tickets({ chainId, address }: { chainId: number; address?: strin
       {msg && <div className="text-xs font-mono bg-amber-50 border border-amber-200 text-amber-900 p-3 rounded-xl break-words">{msg}</div>}
 
       <p className="text-[11px] text-zinc-500 leading-relaxed">
-        Winnings don&apos;t auto-deliver — you must redeem. Tock scans <code>listBinaryMarkets({`{status:"Finalized"}`})</code> (gotcha #10) and redeems the winning side (voided: both at 0.5). Losing redeems pay 0 — we skip them to save gas.
+        Tap <b>Claim</b> to collect your winnings. We check your recent games and send anything you won straight to your wallet.
       </p>
     </div>
   );

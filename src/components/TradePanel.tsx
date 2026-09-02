@@ -148,24 +148,16 @@ export function TradePanel({
         )}
       </AnimatePresence>
 
-      {/* auto-approve + delegate */}
       {setAutoApprove !== undefined && (
-        <label className="flex items-start gap-3 rounded-2xl bg-amber-50 border border-amber-200 p-3 cursor-pointer hover:bg-amber-100/70 transition">
+        <label className="flex items-center gap-3 rounded-xl bg-zinc-50 border border-zinc-200 px-3 py-2.5 cursor-pointer hover:bg-zinc-100 transition">
           <input
             type="checkbox"
             checked={autoApprove ?? true}
             onChange={(e) => setAutoApprove(e.target.checked)}
-            className="mt-0.5 h-4 w-4 rounded border-amber-300 text-amber-500 focus:ring-amber-400"
+            className="h-4 w-4 rounded border-zinc-300 text-black focus:ring-black"
           />
-          <span className="flex-1 text-xs leading-relaxed text-amber-900">
-            <span className="font-bold">Auto-approve max (one-time per pool)</span>
-            <br />
-            <span className="text-[11px] text-amber-800/80">
-              Uses <code className="bg-white/60 px-1 rounded">approve</code> for ERC-20 collateral +{" "}
-              <code className="bg-white/60 px-1 rounded">setOperator</code> for ERC-6909 outcome tokens. Somnia also has{" "}
-              <code className="bg-white/60 px-1 rounded">OperatorPermissionsRegistry</code> for delegating <code>placeOrderFor</code> to a session key — unchecked = prompt exact amount each trade.
-            </span>
-          </span>
+          <span className="text-sm font-medium">Save time — approve once</span>
+          <span className="ml-auto text-xs text-zinc-500">One tap after that</span>
         </label>
       )}
 
@@ -191,14 +183,15 @@ export function TradePanel({
         <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs font-mono text-amber-900 break-words">{lastResult}</div>
       )}
 
-      <p className="text-[11px] leading-relaxed text-zinc-500">
-        IOC order at market (ask + 2¢). Capped risk: max loss = cost. Zero fees. Settlement via Somnia oracle —{" "}
-        {card.oracleQuestionId ? (
-          <a href={`https://prd.oracle.somnia.host/questions/${card.oracleQuestionId}?view=graph`} target="_blank" rel="noreferrer" className="underline">
-            audit trail
-          </a>
-        ) : (
-          "auditable"
+      <p className="text-[11px] leading-relaxed text-zinc-500 text-center">
+        One tap to place. You can only lose what you put in. No fees — results are on-chain.
+        {card.oracleQuestionId && (
+          <>
+            {" "}
+            <a href={`https://prd.oracle.somnia.host/questions/${card.oracleQuestionId}?view=graph`} target="_blank" rel="noreferrer" className="underline">
+              Check result
+            </a>
+          </>
         )}
         .
       </p>

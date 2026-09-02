@@ -829,9 +829,8 @@ export default function Home() {
             </button>
           </div>
 
-          <footer className="text-[11px] leading-relaxed text-zinc-500 pt-2">
-            Tock is a third-party client for DreamDEX event contracts on Somnia. Not affiliated with DreamDEX. This is a hackathon prototype — trade at your own risk, start on testnet. Contracts: BinaryMarketsModule{" "}
-            <span className="font-mono">0x3ecC…e388</span> · Audits on docs.dreamdex.io/security/audits. Builder fees: spot only (1% cap).
+          <footer className="text-[11px] leading-relaxed text-zinc-500 pt-2 text-center">
+            Built for the Somnia × DreamDEX hackathon — testnet demo. Trade at your own risk. Start with the faucet, try a $5 bet.
           </footer>
         </div>
       </main>
