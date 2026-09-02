@@ -9,6 +9,7 @@ import { TradePanel } from "@/components/TradePanel";
 import { StreakBar } from "@/components/StreakBar";
 import { Tickets } from "@/components/Tickets";
 import { RidePanel } from "@/components/RidePanel";
+import { AgentPanel } from "@/components/AgentPanel";
 import { useLiveMarkets } from "@/hooks/useMarkets";
 import { createExchange, addressesForChain } from "@/lib/somnia";
 import { RideConfig, RideState } from "@/lib/ride";
@@ -24,12 +25,21 @@ export default function Home() {
   const [autoApprove, setAutoApprove] = useState(true);
   const [ride, setRide] = useState<RideState | null>(null);
   const [mode, setMode] = useState<"manual" | "ride">("manual");
+  const [isDelegated, setIsDelegated] = useState(false);
+  const [lastHumanTrade, setLastHumanTrade] = useState<{ asset: string; direction: "UP" | "DOWN"; stake: number; at: number } | null>(null);
   const AGENT_ADDRESS = "0x1111111111111111111111111111111111111111" as const;
 
   // Testnet-only for hackathon demo — mainnet disabled, auto-switch to Shannon
   const chainId = walletChainId ?? 50312;
   const isTestnet = chainId === 50312;
   const [networkOpen, setNetworkOpen] = useState(false);
+
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem(`tock:delegated:${chainId}:${address?.toLowerCase()}`);
+      setIsDelegated(v === "true");
+    } catch {}
+  }, [chainId, address]);
 
   // Auto-switch to Shannon testnet on connect (hackathon is testnet-only)
   useEffect(() => {
@@ -173,136 +183,38 @@ export default function Home() {
         }
       }
 
-      // Fast-market fix: batch-approve all active pools in ONE popup when autoApprove is on.
-      // Before: per-pool approve → every new 5m window needed 2 popups (approve + execute) → too slow for 4' windows.
-      // Now: on first trade, collect unique poolAddresses from all active binary markets, check allowances,
-      // and approve all missing pools via multicall3.aggregate in ONE tx. One popup covers the whole session
-      // (pools are recycled, so ~6 pools covers all future windows). Subsequent trades = 1 popup (execute only).
-      // Somnia delegate primitives for even better: ERC20 approve (collateral) + ERC6909 setOperator (outcome tokens)
-      // are handled by SDK's approveIfNeeded/ensureOperator internally; for true one-click after, use
-      // OperatorPermissionsRegistry.setOperatorApprovalGlobal to delegate placeOrderFor to a session key.
+      // One-click after first approve: SDK's internal approveIfNeeded handles pool allowance,
+      // we only do a single max approve to the selected pool when needed. No batch.
       if (publicClient && autoApprove) {
         try {
           const addrs = addressesForChain(chainId);
           const collateral = (addrs as unknown as { collateral?: `0x${string}`; testUsdc?: `0x${string}` }).collateral ?? (addrs as unknown as { testUsdc?: `0x${string}` }).testUsdc;
-          if (collateral) {
+          const pool = (selected.market as unknown as { poolAddress?: string }).poolAddress as `0x${string}` | undefined;
+          if (collateral && pool) {
             const decimals = chainId === 50312 ? 6 : 18;
-            const neededWithPrice = parseUnits(String((snapped * 0.99).toFixed(decimals === 6 ? 4 : 6)), decimals);
-            // Gather unique pools from the just-loaded markets (after loadMarkets above, but we need it now — do a quick load if not yet)
-            // We already did loadMarkets above for symbol check, so ex.markets is ready. Collect pools.
-            const markets = (ex as unknown as { markets?: Record<string, { info?: { poolAddress?: string } }> }).markets;
-            const pools = new Set<string>();
-            if (markets) {
-              for (const m of Object.values(markets)) {
-                const p = (m as unknown as { info?: { poolAddress?: string } }).info?.poolAddress;
-                if (p) pools.add(p.toLowerCase());
-              }
-            }
-            // Fallback: at least the selected pool
-            const selPool = (selected.market as unknown as { poolAddress?: string }).poolAddress;
-            if (selPool) pools.add(selPool.toLowerCase());
-            if (pools.size === 0 && selPool) pools.add(selPool.toLowerCase());
-
-            const toApprove: `0x${string}`[] = [];
-            for (const pool of pools) {
-              const key = `tock:approved:${chainId}:${pool.toLowerCase()}`;
-              let already = false;
+            const needed = parseUnits(String((snapped * 0.99).toFixed(decimals === 6 ? 4 : 6)), decimals);
+            const key = `tock:approved:${chainId}:${pool.toLowerCase()}`;
+            let already = false;
+            try { already = localStorage.getItem(key) === "true"; } catch {}
+            if (!already) {
               try {
-                already = localStorage.getItem(key) === "true";
-              } catch {}
-              if (already) continue;
-              try {
-                const allowance = (await publicClient.readContract({ address: collateral, abi: erc20Abi, functionName: "allowance", args: [address, pool as `0x${string}`] } as never)) as bigint;
-                if (allowance < neededWithPrice) toApprove.push(pool as `0x${string}`);
-                else {
+                const allowance = (await publicClient.readContract({ address: collateral, abi: erc20Abi, functionName: "allowance", args: [address, pool] } as never)) as bigint;
+                if (allowance < needed) {
+                  setApproving(true);
+                  setLastResult(`Approving ${chainId === 50312 ? "tUSDC" : "USDso"} — one-time for this market…`);
+                  let hash: `0x${string}`;
                   try {
-                    localStorage.setItem(key, "true");
-                  } catch {}
-                }
+                    hash = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({ address: collateral, abi: erc20Abi, functionName: "approve", args: [pool, 2n ** 256n - 1n] });
+                  } catch (e) { setLastResult(`Approve rejected: ${(e as Error).message.slice(0,200)}`); return; }
+                  await publicClient.waitForTransactionReceipt({ hash });
+                  try { localStorage.setItem(key, "true"); } catch {}
+                  setLastResult(`Approved — placing order…`);
+                } else { try { localStorage.setItem(key, "true"); } catch {} }
               } catch {}
-            }
-
-            if (toApprove.length > 0) {
-              setApproving(true);
-              if (toApprove.length === 1) {
-                setLastResult(`Approving ${chainId === 50312 ? "tUSDC" : "USDso"} for this pool — one-time…`);
-                const pool = toApprove[0];
-                let hash: `0x${string}`;
-                try {
-                  hash = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({
-                    address: collateral,
-                    abi: erc20Abi,
-                    functionName: "approve",
-                    args: [pool, 2n ** 256n - 1n],
-                  });
-                } catch (e) {
-                  setLastResult(`Approve rejected: ${(e as Error).message.slice(0, 200)}`);
-                  return;
-                }
-                await publicClient.waitForTransactionReceipt({ hash });
-                try {
-                  localStorage.setItem(`tock:approved:${chainId}:${pool.toLowerCase()}`, "true");
-                } catch {}
-                setLastResult(`Approved — placing order…`);
-              } else {
-                setLastResult(`Batch-approving ${toApprove.length} pools in one tx…`);
-                // Use multicall3 to batch all approves into one popup
-                const { encodeFunctionData } = await import("viem");
-                const multicallAddress = (publicClient.chain as unknown as { contracts?: { multicall3?: { address?: string } } })?.contracts?.multicall3?.address as `0x${string}` | undefined;
-                const calls = toApprove.map((pool) => ({
-                  target: collateral,
-                  callData: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [pool, 2n ** 256n - 1n] }),
-                }));
-                try {
-                  // Try multicall3 aggregate
-                  if (multicallAddress) {
-                    const multicallAbi = [{ name: "aggregate", type: "function", stateMutability: "nonpayable", inputs: [{ name: "calls", type: "tuple[]", components: [{ name: "target", type: "address" }, { name: "callData", type: "bytes" }] }], outputs: [{ name: "blockNumber", type: "uint256" }, { name: "returnData", type: "bytes[]" }] }] as const;
-                    const hash = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({
-                      address: multicallAddress,
-                      abi: multicallAbi,
-                      functionName: "aggregate",
-                      args: [calls],
-                    });
-                    await publicClient.waitForTransactionReceipt({ hash });
-                    for (const p of toApprove) {
-                      try {
-                        localStorage.setItem(`tock:approved:${chainId}:${p.toLowerCase()}`, "true");
-                      } catch {}
-                    }
-                    setLastResult(`Batch-approved ${toApprove.length} pools — placing order…`);
-                  } else {
-                    throw new Error("no multicall");
-                  }
-                } catch {
-                  // Fallback: sequential (will be multiple popups, but we tried)
-                  for (const pool of toApprove) {
-                    try {
-                      const h = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({
-                        address: collateral,
-                        abi: erc20Abi,
-                        functionName: "approve",
-                        args: [pool, 2n ** 256n - 1n],
-                      });
-                      await publicClient.waitForTransactionReceipt({ hash: h });
-                      try {
-                        localStorage.setItem(`tock:approved:${chainId}:${pool.toLowerCase()}`, "true");
-                      } catch {}
-                    } catch (e) {
-                      if ((e as Error).message?.includes("rejected")) {
-                        setLastResult(`Batch approve rejected`);
-                        return;
-                      }
-                    }
-                  }
-                  setLastResult(`Approved ${toApprove.length} pools — placing order…`);
-                }
-              }
             }
           }
         } catch {}
-        finally {
-          setApproving(false);
-        }
+        finally { setApproving(false); }
       } else if (!autoApprove) {
         setLastResult(`Auto-approve off — SDK will prompt per-trade if needed.`);
       }
@@ -357,6 +269,7 @@ export default function Home() {
       setLastResult(
         `Placed ${side} ${snapped} @ ${price} — tx ${hash ? hash.slice(0, 10) + "…" : "(no hash)"} ${receipt?.status ? `status ${receipt.status}` : ""}. Watch ticket & streak.`
       );
+      setLastHumanTrade({ asset: selected.asset, direction: side, stake: snapped, at: Date.now() });
 
       // Refresh markets to update books
       refresh();
@@ -411,37 +324,55 @@ export default function Home() {
       setLastResult("Connect wallet first to delegate.");
       return;
     }
+    // Toggle revoke if already delegated
+    if (isDelegated) {
+      setBusy(true);
+      const ex = createExchange({ chainId, walletClient: walletClient as unknown as never });
+      try {
+        const traderAny = ex.trader as unknown as { setOperatorApprovalGlobal?: (p: unknown) => Promise<unknown> };
+        if (traderAny.setOperatorApprovalGlobal) {
+          await traderAny.setOperatorApprovalGlobal({ operator: AGENT_ADDRESS, selectors: ["0x80054449", "0xe37b444b"], approved: false } as never);
+        }
+        try {
+          localStorage.removeItem(`tock:delegated:${chainId}:${address.toLowerCase()}`);
+        } catch {}
+        setIsDelegated(false);
+        setLastResult("Revoked — agent can no longer trade for you.");
+      } catch (e) {
+        setLastResult(`Revoke failed: ${(e as Error).message.slice(0, 200)}`);
+      } finally {
+        setBusy(false);
+        try { ex.close?.(); } catch {}
+      }
+      return;
+    }
     setBusy(true);
     const ex = createExchange({ chainId, walletClient: walletClient as unknown as never });
     try {
       setLastResult(`Delegating to Tock Agent ${AGENT_ADDRESS.slice(0, 6)}… — one-time, revocable…`);
-      // EIP-7702 style + OperatorPermissionsRegistry — single tx, then agent can placeOrderFor
-      // Selectors: placeOrderFor 0x80054449 + cancel 0xe37b444b
       const traderAny = ex.trader as unknown as { setOperatorApprovalGlobal?: (p: unknown) => Promise<unknown> };
       if (traderAny.setOperatorApprovalGlobal) {
         const res = await traderAny.setOperatorApprovalGlobal({ operator: AGENT_ADDRESS, selectors: ["0x80054449", "0xe37b444b"], approved: true } as never);
         const h = (res as { receipt?: { transactionHash?: string } })?.receipt?.transactionHash ?? "";
-        setLastResult(`Delegated! Agent ${AGENT_ADDRESS.slice(0, 10)}… can now place on your behalf via placeOrderFor (one popup done, next bets 0 popups via agent). Tx ${h.slice(0, 10)}… Revoke anytime via same call with approved:false.`);
-        try {
-          localStorage.setItem(`tock:delegated:${chainId}:${address.toLowerCase()}`, "true");
-        } catch {}
+        setLastResult(`Delegated! Agent ${AGENT_ADDRESS.slice(0, 10)}… can now place via placeOrderFor — one popup done, next bets 0 popups via agent. Tx ${h.slice(0, 10)}…`);
+        try { localStorage.setItem(`tock:delegated:${chainId}:${address.toLowerCase()}`, "true"); } catch {}
+        setIsDelegated(true);
       } else {
-        // Fallback: approve collateral max to agent (so agent can pull via router)
         const addrs = addressesForChain(chainId);
         const collateral = (addrs as unknown as { collateral?: `0x${string}` }).collateral;
         if (collateral) {
           const hash = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({ address: collateral, abi: erc20Abi, functionName: "approve", args: [AGENT_ADDRESS, 2n ** 256n - 1n] });
           await publicClient?.waitForTransactionReceipt({ hash });
           setLastResult(`Approved collateral to agent — agent can now trade for you. Tx ${hash.slice(0, 10)}…`);
+          try { localStorage.setItem(`tock:delegated:${chainId}:${address.toLowerCase()}`, "true"); } catch {}
+          setIsDelegated(true);
         }
       }
     } catch (e) {
       setLastResult(`Delegate failed: ${(e as Error).message.slice(0, 300)} — Somnia is agent-native (MCP + reactivity), but binary pools use OperatorPermissionsRegistry; fallback is approve.`);
     } finally {
       setBusy(false);
-      try {
-        ex.close?.();
-      } catch {}
+      try { ex.close?.(); } catch {}
     }
   };
 
@@ -467,10 +398,48 @@ export default function Home() {
       const outs = m.outcomes ?? [];
       const symbol = cfg.direction === "UP" ? outs.find((o) => o.label === "YES")?.symbol ?? outs[0]?.symbol : outs.find((o) => o.label === "NO")?.symbol ?? outs[1]?.symbol;
       if (!symbol) throw new Error("No outcome symbol");
-      const price = cfg.direction === "UP" ? 0.55 : 0.45; // simplified — real would quote book
+      // Use live book for price — same as manual trade, not fixed 0.55
+      let price: number;
+      try {
+        const book = await (ex as unknown as { fetchOrderBook: (s: string, n: number) => Promise<{ bids: number[][]; asks: number[][] }> }).fetchOrderBook(symbol, 5);
+        const bestAsk = book.asks?.[0]?.[0];
+        const mid = (book.bids?.[0]?.[0] !== undefined && bestAsk !== undefined) ? (book.bids[0][0] + bestAsk) / 2 : undefined;
+        if (cfg.direction === "UP") price = Math.min(0.99, (bestAsk ?? mid ?? 0.55) + 0.02);
+        else {
+          const askNoUp = bestAsk ?? mid ?? 0.5;
+          price = Math.max(0.01, askNoUp - 0.02);
+          if (bestAsk === undefined && mid === undefined) price = 0.05;
+        }
+      } catch {
+        price = cfg.direction === "UP" ? 0.57 : 0.43;
+      }
+      price = Math.max(0.001, Math.min(0.999, Number(price.toFixed(3))));
       const qty = cfg.stake;
+      // Single approve for this pool if needed (one-time)
+      if (autoApprove) {
+        try {
+          const pool = (m.info as unknown as { poolAddress?: `0x${string}` }).poolAddress;
+          const addrs = addressesForChain(chainId);
+          const collateral = (addrs as unknown as { collateral?: `0x${string}` }).collateral;
+          if (pool && collateral) {
+            const decimals = chainId === 50312 ? 6 : 18;
+            const needed = parseUnits(String((qty * 0.99).toFixed(decimals === 6 ? 4 : 6)), decimals);
+            const allowance = (await (ex.client as unknown as { getErc20Allowance?: (t: string, o: string, s: string) => Promise<bigint> }).getErc20Allowance?.(collateral, address!, pool)) as bigint | undefined;
+            // Fallback direct read
+            let allow = allowance;
+            if (allow === undefined && publicClient) {
+              try { allow = (await publicClient.readContract({ address: collateral, abi: erc20Abi, functionName: "allowance", args: [address!, pool] } as never)) as bigint; } catch {}
+            }
+            if (allow !== undefined && allow < needed) {
+              const h = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({ address: collateral, abi: erc20Abi, functionName: "approve", args: [pool, 2n ** 256n - 1n] });
+              await publicClient?.waitForTransactionReceipt({ hash: h });
+            }
+          }
+        } catch {}
+      }
       const order = await (ex as unknown as { createOrder: (s: string, t: string, side: string, a: number, p: number, o: unknown) => Promise<unknown> }).createOrder(symbol, "limit", "buy", qty, price, { timeInForce: "IOC" });
       const h = ((order as { info?: { receipt?: { transactionHash?: string } } })?.info?.receipt?.transactionHash ?? "") as string;
+      setLastHumanTrade({ asset: cfg.asset, direction: cfg.direction as "UP" | "DOWN", stake: qty, at: Date.now() });
       const leg: import("@/lib/ride").RideLeg = { marketId: String(info["marketId"] ?? ""), expiry: Number(info["expiry"] ?? 0), side: cfg.direction, price, quantity: qty, escrow: qty * price, txHash: h, status: "open", multiplier: 1 / price };
       setRide((r) => (r ? { ...r, legs: [...r.legs, leg], pot: r.pot } : r));
       setLastResult(`Ride leg 1 placed — tx ${h.slice(0, 10)}… Now polling settlement every 3s…`);
@@ -739,6 +708,7 @@ export default function Home() {
           ) : (
             <TradePanel card={selected} onTrade={trade} busy={busy} lastResult={lastResult} autoApprove={autoApprove} setAutoApprove={setAutoApprove} />
           )}
+          <AgentPanel isDelegated={isDelegated} onToggle={handleDelegate} lastHumanTrade={lastHumanTrade} />
 
           {/* Price context — Binance sparkline placeholder */}
           {selected && (

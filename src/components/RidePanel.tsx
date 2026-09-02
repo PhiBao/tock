@@ -87,7 +87,10 @@ export function RidePanel({
               <div>
                 <div className="flex justify-between text-xs"><span className="text-zinc-400">Max legs (streak parlay)</span><span className="font-mono">{maxLegs}</span></div>
                 <Slider value={[maxLegs]} min={2} max={8} step={1} onValueChange={(v) => setMaxLegs(Array.isArray(v) ? (v as number[])[0] : (v as number))} />
-                <div className="text-[11px] text-zinc-500">Payout if all win: <span className="font-mono text-white">{(2 ** maxLegs).toFixed(1)}× max (at 50% fair)</span> — real is `∏1/p`, ~14.6× for 4 legs after spread.</div>
+                <div className="rounded-xl bg-zinc-800 border border-zinc-700 p-2.5 text-xs leading-relaxed">
+                  <div className="font-bold text-white">New here? Win all {maxLegs} rounds and <NumberTicker value={stake * Math.pow(1.8, maxLegs)} decimalPlaces={0} prefix="$" className="text-emerald-400" /> <span className="text-zinc-400">from ${stake}</span></div>
+                  <div className="text-[11px] text-zinc-400 mt-1">Each win rolls your $ to the next 5-min window. Lose once = ride ends. Real odds change live — shown as <span className="font-mono bg-white/10 px-1 rounded">1/p</span> per leg. Example: 4 wins at fair odds ≈ 14× after fees.</div>
+                </div>
               </div>
               <button onClick={() => setShowAdvanced(!showAdvanced)} className="text-xs text-zinc-400 underline">
                 {showAdvanced ? "Hide guardrails" : "Show guardrails (cash-out / stop-loss)"}
