@@ -21,9 +21,19 @@ export default function Home() {
   const [balances, setBalances] = useState<{ collateral: string; native: string; decimals: number } | null>(null);
   const [autoApprove, setAutoApprove] = useState(true);
 
-  // Default to Shannon testnet for safe demo, but respect wallet chain if connected
+  // Testnet-only for hackathon demo — mainnet disabled, auto-switch to Shannon
   const chainId = walletChainId ?? 50312;
   const isTestnet = chainId === 50312;
+  const [networkOpen, setNetworkOpen] = useState(false);
+
+  // Auto-switch to Shannon testnet on connect (hackathon is testnet-only)
+  useEffect(() => {
+    if (isConnected && walletChainId && walletChainId !== 50312) {
+      try {
+        switchChain({ chainId: 50312 });
+      } catch {}
+    }
+  }, [isConnected, walletChainId, switchChain]);
 
   useEffect(() => {
     try {
@@ -130,71 +140,7 @@ export default function Home() {
         return;
       }
 
-      // Allowance: let the SDK's internal approveIfNeeded handle pool-specific ERC20 approvals.
-      // We only do a one-time manual max-approve to the universal spender when autoApprove is on,
-      // otherwise we skip and let the SDK prompt per-trade (exact). This avoids duplicate popups.
-      // SDK caches per token→spender, but pools are per-window — so first trade per new window may still need 1 approve.
-      // Somnia also has delegate primitives: ERC6909 setOperator (outcome tokens) and
-      // OperatorPermissionsRegistry.setOperatorApprovalGlobal (for placeOrderFor delegation) — we surface those as “delegate” below.
-      if (publicClient && autoApprove) {
-        try {
-          const addrs = addressesForChain(chainId);
-          const collateral = (addrs as unknown as { collateral?: `0x${string}`; testUsdc?: `0x${string}` }).collateral ?? (addrs as unknown as { testUsdc?: `0x${string}` }).testUsdc;
-          // Prefer pool-specific spender for binary: the market's own pool (requires per-window approve)
-          // Fallback to universal CollateralRouter if pool not yet known — keeps it to one popup per new pool.
-          const poolFromMarket = (selected.market as unknown as { poolAddress?: `0x${string}` }).poolAddress;
-          const router = (addrs as unknown as { collateralRouter?: `0x${string}` }).collateralRouter;
-          const spender: `0x${string}` | undefined = poolFromMarket ?? router ?? (addrs as unknown as { binaryModule?: `0x${string}` }).binaryModule;
-          if (collateral && spender) {
-            const decimals = chainId === 50312 ? 6 : 18;
-            const neededWithPrice = parseUnits(String((snapped * 0.99).toFixed(decimals === 6 ? 4 : 6)), decimals);
-            const key = `tock:approved:${chainId}:${spender.toLowerCase()}`;
-            const already = (() => {
-              try {
-                return localStorage.getItem(key) === "true";
-              } catch {
-                return false;
-              }
-            })();
-            if (!already) {
-              try {
-                const allowance = (await publicClient.readContract({ address: collateral, abi: erc20Abi, functionName: "allowance", args: [address, spender] } as never)) as bigint;
-                if (allowance < neededWithPrice) {
-                  setApproving(true);
-                  setLastResult(`Approving ${chainId === 50312 ? "tUSDC" : "USDso"} for this pool — one-time per new window…`);
-                  let hash: `0x${string}`;
-                  try {
-                    hash = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({
-                      address: collateral,
-                      abi: erc20Abi,
-                      functionName: "approve",
-                      args: [spender, 2n ** 256n - 1n],
-                    });
-                  } catch (e) {
-                    setLastResult(`Approve rejected: ${(e as Error).message.slice(0, 200)}`);
-                    return;
-                  }
-                  await publicClient.waitForTransactionReceipt({ hash });
-                  try {
-                    localStorage.setItem(key, "true");
-                  } catch {}
-                  setLastResult(`Approved pool ${spender.slice(0, 6)}… — placing order…`);
-                } else {
-                  try {
-                    localStorage.setItem(key, "true");
-                  } catch {}
-                }
-              } catch {}
-            }
-          }
-        } catch {}
-        finally {
-          setApproving(false);
-        }
-      } else if (!autoApprove) {
-        // When auto-approve off, do not pre-approve — let SDK prompt per-trade (or use Permit2 if available)
-        setLastResult(`Auto-approve off — SDK will prompt for allowance if needed.`);
-      }
+
 
       // Exchange needs its market registry populated before createOrder (otherwise "unknown symbol")
       // useLiveMarkets loads on a separate instance, so hydrate this trader instance now.
@@ -220,6 +166,140 @@ export default function Home() {
           setLastResult(`Market ${symbol} just rolled — refreshed board, pick the new window and try again.`);
           return;
         }
+      }
+
+      // Fast-market fix: batch-approve all active pools in ONE popup when autoApprove is on.
+      // Before: per-pool approve → every new 5m window needed 2 popups (approve + execute) → too slow for 4' windows.
+      // Now: on first trade, collect unique poolAddresses from all active binary markets, check allowances,
+      // and approve all missing pools via multicall3.aggregate in ONE tx. One popup covers the whole session
+      // (pools are recycled, so ~6 pools covers all future windows). Subsequent trades = 1 popup (execute only).
+      // Somnia delegate primitives for even better: ERC20 approve (collateral) + ERC6909 setOperator (outcome tokens)
+      // are handled by SDK's approveIfNeeded/ensureOperator internally; for true one-click after, use
+      // OperatorPermissionsRegistry.setOperatorApprovalGlobal to delegate placeOrderFor to a session key.
+      if (publicClient && autoApprove) {
+        try {
+          const addrs = addressesForChain(chainId);
+          const collateral = (addrs as unknown as { collateral?: `0x${string}`; testUsdc?: `0x${string}` }).collateral ?? (addrs as unknown as { testUsdc?: `0x${string}` }).testUsdc;
+          if (collateral) {
+            const decimals = chainId === 50312 ? 6 : 18;
+            const neededWithPrice = parseUnits(String((snapped * 0.99).toFixed(decimals === 6 ? 4 : 6)), decimals);
+            // Gather unique pools from the just-loaded markets (after loadMarkets above, but we need it now — do a quick load if not yet)
+            // We already did loadMarkets above for symbol check, so ex.markets is ready. Collect pools.
+            const markets = (ex as unknown as { markets?: Record<string, { info?: { poolAddress?: string } }> }).markets;
+            const pools = new Set<string>();
+            if (markets) {
+              for (const m of Object.values(markets)) {
+                const p = (m as unknown as { info?: { poolAddress?: string } }).info?.poolAddress;
+                if (p) pools.add(p.toLowerCase());
+              }
+            }
+            // Fallback: at least the selected pool
+            const selPool = (selected.market as unknown as { poolAddress?: string }).poolAddress;
+            if (selPool) pools.add(selPool.toLowerCase());
+            if (pools.size === 0 && selPool) pools.add(selPool.toLowerCase());
+
+            const toApprove: `0x${string}`[] = [];
+            for (const pool of pools) {
+              const key = `tock:approved:${chainId}:${pool.toLowerCase()}`;
+              let already = false;
+              try {
+                already = localStorage.getItem(key) === "true";
+              } catch {}
+              if (already) continue;
+              try {
+                const allowance = (await publicClient.readContract({ address: collateral, abi: erc20Abi, functionName: "allowance", args: [address, pool as `0x${string}`] } as never)) as bigint;
+                if (allowance < neededWithPrice) toApprove.push(pool as `0x${string}`);
+                else {
+                  try {
+                    localStorage.setItem(key, "true");
+                  } catch {}
+                }
+              } catch {}
+            }
+
+            if (toApprove.length > 0) {
+              setApproving(true);
+              if (toApprove.length === 1) {
+                setLastResult(`Approving ${chainId === 50312 ? "tUSDC" : "USDso"} for this pool — one-time…`);
+                const pool = toApprove[0];
+                let hash: `0x${string}`;
+                try {
+                  hash = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({
+                    address: collateral,
+                    abi: erc20Abi,
+                    functionName: "approve",
+                    args: [pool, 2n ** 256n - 1n],
+                  });
+                } catch (e) {
+                  setLastResult(`Approve rejected: ${(e as Error).message.slice(0, 200)}`);
+                  return;
+                }
+                await publicClient.waitForTransactionReceipt({ hash });
+                try {
+                  localStorage.setItem(`tock:approved:${chainId}:${pool.toLowerCase()}`, "true");
+                } catch {}
+                setLastResult(`Approved — placing order…`);
+              } else {
+                setLastResult(`Batch-approving ${toApprove.length} pools in one tx…`);
+                // Use multicall3 to batch all approves into one popup
+                const { encodeFunctionData } = await import("viem");
+                const multicallAddress = (publicClient.chain as unknown as { contracts?: { multicall3?: { address?: string } } })?.contracts?.multicall3?.address as `0x${string}` | undefined;
+                const calls = toApprove.map((pool) => ({
+                  target: collateral,
+                  callData: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [pool, 2n ** 256n - 1n] }),
+                }));
+                try {
+                  // Try multicall3 aggregate
+                  if (multicallAddress) {
+                    const multicallAbi = [{ name: "aggregate", type: "function", stateMutability: "nonpayable", inputs: [{ name: "calls", type: "tuple[]", components: [{ name: "target", type: "address" }, { name: "callData", type: "bytes" }] }], outputs: [{ name: "blockNumber", type: "uint256" }, { name: "returnData", type: "bytes[]" }] }] as const;
+                    const hash = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({
+                      address: multicallAddress,
+                      abi: multicallAbi,
+                      functionName: "aggregate",
+                      args: [calls],
+                    });
+                    await publicClient.waitForTransactionReceipt({ hash });
+                    for (const p of toApprove) {
+                      try {
+                        localStorage.setItem(`tock:approved:${chainId}:${p.toLowerCase()}`, "true");
+                      } catch {}
+                    }
+                    setLastResult(`Batch-approved ${toApprove.length} pools — placing order…`);
+                  } else {
+                    throw new Error("no multicall");
+                  }
+                } catch {
+                  // Fallback: sequential (will be multiple popups, but we tried)
+                  for (const pool of toApprove) {
+                    try {
+                      const h = await (walletClient as unknown as { writeContract: (p: unknown) => Promise<`0x${string}`> }).writeContract({
+                        address: collateral,
+                        abi: erc20Abi,
+                        functionName: "approve",
+                        args: [pool, 2n ** 256n - 1n],
+                      });
+                      await publicClient.waitForTransactionReceipt({ hash: h });
+                      try {
+                        localStorage.setItem(`tock:approved:${chainId}:${pool.toLowerCase()}`, "true");
+                      } catch {}
+                    } catch (e) {
+                      if ((e as Error).message?.includes("rejected")) {
+                        setLastResult(`Batch approve rejected`);
+                        return;
+                      }
+                    }
+                  }
+                  setLastResult(`Approved ${toApprove.length} pools — placing order…`);
+                }
+              }
+            }
+          }
+        } catch {}
+        finally {
+          setApproving(false);
+        }
+      } else if (!autoApprove) {
+        setLastResult(`Auto-approve off — SDK will prompt per-trade if needed.`);
       }
 
       // Price: probe book for best ask/bid, fallback to mid
@@ -344,23 +424,40 @@ export default function Home() {
                 <span className="text-white font-bold">{Number(balances.native).toFixed(4)}</span>
               </div>
             )}
-            <button
-              onClick={async () => {
-                try {
-                  switchChain({ chainId: isTestnet ? 5031 : 50312 });
-                } catch {
-                  // fallback: try to add chain via wallet
-                  try {
-                    const target = isTestnet ? 5031 : 50312;
-                    const chain = target === 5031 ? { chainId: "0x13A7", chainName: "Somnia", nativeCurrency: { name: "Somnia", symbol: "SOMI", decimals: 18 }, rpcUrls: ["https://api.infra.mainnet.somnia.network"], blockExplorerUrls: ["https://explorer.somnia.network"] } : { chainId: "0xC4B0", chainName: "Somnia Shannon", nativeCurrency: { name: "STT", symbol: "STT", decimals: 18 }, rpcUrls: ["https://api.infra.testnet.somnia.network"], blockExplorerUrls: ["https://shannon-explorer.somnia.network"] };
-                    await (walletClient as unknown as { request: (p: unknown) => Promise<unknown> })?.request?.({ method: "wallet_addEthereumChain", params: [chain] });
-                  } catch {}
-                }
-              }}
-              className="hidden sm:inline text-xs px-3 py-1.5 rounded-full bg-zinc-900 border border-zinc-800 hover:bg-zinc-800"
-            >
-              {isTestnet ? "Shannon testnet" : "Somnia mainnet"} · switch
-            </button>
+            <div className="relative hidden sm:inline">
+              <button
+                onClick={() => setNetworkOpen((o) => !o)}
+                className="text-xs px-3 py-1.5 rounded-full bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 flex items-center gap-1.5"
+              >
+                <span className={`w-2 h-2 rounded-full ${isTestnet ? "bg-emerald-500" : "bg-amber-500"}`} />
+                {isTestnet ? "Shannon testnet" : "Somnia mainnet"} ▾
+              </button>
+              {networkOpen && (
+                <div className="absolute right-0 mt-2 w-56 rounded-2xl bg-zinc-900 border border-zinc-800 shadow-xl overflow-hidden z-50">
+                  <button
+                    onClick={() => {
+                      setNetworkOpen(false);
+                      try {
+                        switchChain({ chainId: 50312 });
+                      } catch {}
+                    }}
+                    className="w-full text-left px-4 py-3 text-sm hover:bg-zinc-800 flex items-center justify-between"
+                  >
+                    <span>Shannon testnet</span>
+                    <span className="text-xs bg-emerald-500 text-black px-2 py-0.5 rounded-full font-bold">Live</span>
+                  </button>
+                  <button
+                    disabled
+                    className="w-full text-left px-4 py-3 text-sm text-zinc-500 cursor-not-allowed flex items-center justify-between"
+                    title="Mainnet coming soon — hackathon demo is testnet-only"
+                  >
+                    <span>Somnia mainnet</span>
+                    <span className="text-xs border border-zinc-700 px-2 py-0.5 rounded-full">Soon</span>
+                  </button>
+                  <div className="px-4 py-2 text-[11px] text-zinc-500 border-t border-zinc-800">Hackathon lives on Shannon. Mainnet disabled.</div>
+                </div>
+              )}
+            </div>
             <WalletConnect />
           </div>
         </div>
