@@ -2,11 +2,13 @@
 import Link from "next/link";
 import { useState } from "react";
 import { SiteHeader } from "@/components/SiteHeader";
+import { ToolResult } from "@/components/ToolResult";
 import { useBalances } from "@/hooks/useBalances";
 import { useAccount, usePublicClient } from "wagmi";
 
 export default function McpPage() {
-  const [result, setResult] = useState<string>("");
+  const [result, setResult] = useState<unknown>(null);
+  const [lastTool, setLastTool] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
   const { address, chainId, isConnected } = useAccount();
@@ -15,16 +17,16 @@ export default function McpPage() {
 
   const callTool = async (name: string, args: Record<string, unknown> = {}) => {
     setLoading(true);
+    setLastTool(name);
     try {
       const res = await fetch("/api/mcp", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
       });
-      const j = await res.json();
-      setResult(JSON.stringify(j, null, 2));
+      setResult(await res.json());
     } catch (e) {
-      setResult(String(e));
+      setResult({ error: { message: String(e) } });
     } finally {
       setLoading(false);
     }
@@ -147,10 +149,10 @@ export default function McpPage() {
                     </button>
                   </div>
                   {loading && <p className="mt-2 font-mono text-xs text-zinc-500">Calling tool…</p>}
-                  {result && (
-                    <pre className="mt-2 max-h-[260px] overflow-auto rounded-2xl border border-white/10 bg-black/50 p-3 font-mono text-xs text-zinc-300">
-                      {result}
-                    </pre>
+                  {result !== null && !loading && (
+                    <div className="mt-2">
+                      <ToolResult tool={lastTool} data={result} />
+                    </div>
                   )}
                 </>
               )}
