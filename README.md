@@ -1,12 +1,12 @@
 # Tock — Call the next 15 minutes
 
-> The 15-minute arcade for BTC/ETH direction on DreamDEX. Zero fees, self-custody, streaks, shareable win cards. Built on Somnia for the **Somnia × DreamDEX Event Contracts Hackathon**.
+> Tock is the 15-minute arcade for BTC/ETH direction on DreamDEX — one-tap UP/DOWN, auto-roll Ride parlays, and AI-agent trading. Zero fees, self-custody, streaks, shareable win cards. Built on Somnia for the **Somnia × DreamDEX Event Contracts Hackathon**.
 
 [![CI](https://github.com/PhiBao/tock/actions/workflows/ci.yml/badge.svg)](https://github.com/PhiBao/tock/actions/workflows/ci.yml)
 ![Shannon testnet](https://img.shields.io/badge/network-Shannon%20testnet%2050312-amber)
 ![SDK](https://img.shields.io/badge/sdk-%40somnia--chain%2Fmarkets--sdk-0.28-blue)
 
-**Live:** production URL goes here post-deploy · **Proof:** [/proof](/proof) in-app · **Agents:** [/mcp](/mcp) in-app
+**Live:** [tock-delta.vercel.app](https://tock-delta.vercel.app) · **Proof:** [/proof](https://tock-delta.vercel.app/proof) · **Agents:** [/mcp](https://tock-delta.vercel.app/mcp) · **MCP endpoint:** `https://tock-delta.vercel.app/api/mcp`
 
 ---
 
@@ -18,7 +18,11 @@ Algo Arena proved demand: **$89.6M volume** on BTC/ETH 15m/1h UP/DOWN in 8 weeks
 
 - **Manual mode** — one-tap UP/DOWN, size presets (5/25/100 contracts) + custom, live cost vs. to-win preview, IOC execution that crosses the spread.
 - **Ride mode** — parlay auto-roll: one stake rolls window-to-window with cash-out target, stop-loss, and max-leg guardrails.
-- **Agent surface** — one-time revocable delegation plus a live MCP endpoint (`/api/mcp`, see [/mcp](/mcp)): Claude/Cursor can read windows and place calls.
+- **Agent surface** — one-time revocable delegation plus a live MCP endpoint: Claude/Cursor can read windows and place calls. Setup takes 60 seconds (see [/mcp](https://tock-delta.vercel.app/mcp)):
+  ```json
+  { "mcpServers": { "tock": { "command": "npx", "args": ["-y", "mcp-remote", "https://tock-delta.vercel.app/api/mcp"] } } }
+  ```
+  `GET https://tock-delta.vercel.app/api/mcp` returns the machine-readable tool list.
 - **Tickets & claim** — auto-scans the last 40 settled windows, redeems winners (voids pay 0.5 both sides), never wastes gas on losing sides.
 - **Streaks & share cards** — local streak ledger with win-rate, one-click 1080×600 PNG export + native share sheet.
 - **Proof page** (`/proof`) — live windows, contract addresses, execution policy, and reproduce commands. Don't trust the demo; verify it.

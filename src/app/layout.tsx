@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Tock — Call the next 15 minutes",
-  description: "The 15-minute arcade for BTC/ETH direction on DreamDEX. Zero fees, self-custody, streaks. Built on Somnia.",
+  description: "Tock is the 15-minute arcade for BTC/ETH direction on DreamDEX — one-tap UP/DOWN, auto-roll Ride parlays, and AI-agent trading. Zero fees, self-custody, settled on-chain.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

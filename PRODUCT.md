@@ -1,6 +1,6 @@
 # Tock — Product Definition
 
-> **One line:** The 15-minute arcade for BTC/ETH direction on DreamDEX. Countdown-driven, one-tap UP/DOWN, streaks, shareable win cards. Zero fees, self-custody, fully on-chain.
+> **One line:** The 15-minute arcade for BTC/ETH direction on DreamDEX. One-tap UP/DOWN, auto-roll Ride parlays, AI-agent trading, streaks, shareable win cards. Zero fees, self-custody, fully on-chain.
 
 ## Thesis
 

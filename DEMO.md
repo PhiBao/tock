@@ -4,7 +4,7 @@ Total: ~2 minutes. One take, no cuts if the windows cooperate. Record at 1080p, 
 
 ## 0:00 — Land (10s)
 
-Open the app. Point at the hero: **one live countdown**, UP probability, BBO. Say: *"Tock is the 15-minute arcade for BTC and ETH direction on DreamDEX — one tap, zero fees, self-custody."*
+Open the app. Point at the hero: **one live countdown**, UP probability, BBO. Say: *"Tock is the 15-minute arcade for BTC and ETH direction on DreamDEX — one-tap calls, auto-roll rides, and AI-agent trading. Zero fees, self-custody."*
 
 ## 0:10 — Fund (15s)
 
